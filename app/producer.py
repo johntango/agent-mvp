@@ -1,8 +1,8 @@
 import uuid
-from click import option
 from app.bus import app, task_topic, make_task
 
-@app.command(option('--text', type=str))
+@app.command()                    # ← use Faust's command wrapper
+@app.option('--text', type=str)   # ← and Faust's option wrapper (not click.option)
 async def enqueue(text: str):
     text = (text or "Add cursor-based pagination to the /invoices API").strip()
     tid = str(uuid.uuid4())
