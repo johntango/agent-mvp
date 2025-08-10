@@ -15,7 +15,7 @@ web:
 
 TEXT ?= Implement pagination for /invoices API
 send:
-	python -m app.producer enqueue --text "$(TEXT)"
+	python scripts/enqueue.py --text "Implement pagination for /invoices API"
 
 test:
 	pytest -q
