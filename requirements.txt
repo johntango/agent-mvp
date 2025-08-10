@@ -1,0 +1,7 @@
+openai-agents>=0.2.0
+faust-streaming>=0.10.14
+flask>=3.0.0
+pydantic>=2.7.0
+uvloop; platform_system != "Windows"
+pytest>=8.0.0
+click>=8.1.0
