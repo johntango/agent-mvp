@@ -1,44 +1,96 @@
-import json
-from pathlib import Path
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
 from agents import Agent, Runner
 
-LOGFILE = Path("data/reports.jsonl")
-LOGFILE.parent.mkdir(parents=True, exist_ok=True)
+# ---------- Structured outputs per agent ----------
 
-def make_architect_agent():
-    return Agent(name='Architect', instructions='Design the solution.', output_type="design")
+class Design(BaseModel):
+    design_summary: str
+    files_touched: List[str]
 
-def make_implementer_agent():
-    return Agent(name='Implementer', instructions='Write the implementation code.', output_type="code")
+class ImplResult(BaseModel):
+    diff_summary: str
+    code_snippets: List[str]  # short snippets, not full files
 
-def make_tester_agent():
-    return Agent(name='Tester', instructions='Write tests and run them.', output_type="test_results")
+class TestResult(BaseModel):
+    tests_added: int
+    passed: int
+    failed: int
 
-def make_reviewer_agent():
-    return Agent(name='Reviewer', instructions='Review code and test results.', output_type="review")
+class ReviewResult(BaseModel):
+    approved: bool
+    comments: List[str]
 
-def run_pipeline(task_id: str, prompt: str):
-    runner = Runner()
-    agents = [
-        make_architect_agent(),
-        make_implementer_agent(),
-        make_tester_agent(),
-        make_reviewer_agent()
-    ]
+# ---------- Factory functions (no classes) ----------
 
-    current_input = prompt
-    for agent in agents:
-        result = runner.run(agent, current_input)
-        persist_stage(task_id, agent.name, result)
-        current_input = result  # Pass output to next stage
+def make_architect_agent() -> Agent:
+    return Agent(
+        name="Architect",
+        instructions=(
+            "You are a software architect. Given the task prompt, produce a succinct design plan. "
+            "Concisely list which files/modules to modify (files_touched). "
+            "Output must populate the Pydantic fields exactly."
+        ),
+        output_type=Design,
+    )
 
-    persist_final(task_id)
+def make_implementer_agent() -> Agent:
+    return Agent(
+        name="Implementer",
+        instructions=(
+            "Implement the design with minimal, focused changes. "
+            "Return a brief diff_summary and a few short code_snippets."
+        ),
+        output_type=ImplResult,
+    )
 
-def persist_stage(task_id: str, stage: str, content):
-    entry = {"task_id": task_id, "stage": stage, "output": content}
-    with LOGFILE.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+def make_tester_agent() -> Agent:
+    return Agent(
+        name="Tester",
+        instructions=(
+            "Write tests that verify the change and conceptually execute them. "
+            "Return counts (tests_added, passed, failed)."
+        ),
+        output_type=TestResult,
+    )
 
-def persist_final(task_id: str):
-    with LOGFILE.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"task_id": task_id, "status": "done"}) + "\n")
+def make_reviewer_agent() -> Agent:
+    return Agent(
+        name="Reviewer",
+        instructions=(
+            "Perform a code review of the change and tests. "
+            "Set approved=true only if no blockers remain; include brief comments."
+        ),
+        output_type=ReviewResult,
+    )
+
+# Optional helper if you want to run everything in one call elsewhere.
+async def run_pipeline(task_text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    triage_ctx = context or {}
+    arch = make_architect_agent()
+    impl = make_implementer_agent()
+    test = make_tester_agent()
+    rev  = make_reviewer_agent()
+
+    # Architect
+    r_arch = await Runner.run(arch, task_text, context=triage_ctx)
+    arch_out = r_arch.final_output
+
+    # Implementer
+    r_impl = await Runner.run(impl, task_text, context={**triage_ctx, "design": arch_out})
+    impl_out = r_impl.final_output
+
+    # Tester
+    r_test = await Runner.run(test, task_text, context={**triage_ctx, "design": arch_out, "impl": impl_out})
+    test_out = r_test.final_output
+
+    # Reviewer
+    r_rev  = await Runner.run(rev,  task_text, context={**triage_ctx, "design": arch_out, "impl": impl_out, "tests": test_out})
+    rev_out = r_rev.final_output
+
+    return {
+        "design": arch_out,
+        "implementation": impl_out,
+        "tests": test_out,
+        "review": rev_out,
+    }

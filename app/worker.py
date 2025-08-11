@@ -1,30 +1,38 @@
-import os, json, time, uuid
+import os, json, time, uuid, logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from agents import Runner
 from app.bus import app, task_topic, report_topic, make_report
-from app.agents import make_architect_agent, make_implementer_agent, make_tester_agent, make_reviewer_agent, run_pipeline
+from app.agents import (
+    make_architect_agent, make_implementer_agent,
+    make_tester_agent, make_reviewer_agent
+)
 from app.config import load_config
 from app.state_json import upsert_task, upsert_step, append_artifact
-from app.models import step_result
-import logging
+
+# ---------- Setup ----------
 
 cfg = load_config()
-DATA_DIR = Path(cfg["DATA_DIR"]); DATA_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR = Path(cfg["DATA_DIR"])
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGFILE = DATA_DIR / "reports.jsonl"
 LOGFILE.parent.mkdir(parents=True, exist_ok=True)
 LOGFILE.touch(exist_ok=True)
 
 logger = logging.getLogger("agent-mvp.worker")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger.info(
+    "Worker starting; brokers=%s data_dir=%s task_topic=%s report_topic=%s",
+    cfg.get("REDPANDA_BROKERS"), cfg.get("DATA_DIR"), cfg.get("TASK_TOPIC"), cfg.get("REPORT_TOPIC")
+)
 
-logger.info("Worker starting; brokers=%s data_dir=%s task_topic=%s report_topic=%s",
-            cfg["REDPANDA_BROKERS"], cfg["DATA_DIR"], cfg["TASK_TOPIC"], cfg["REPORT_TOPIC"])
+# ---------- Helpers ----------
 
 def _to_jsonable(obj: Any) -> Any:
+    """Coerce Pydantic and other objects to JSON-serializable values."""
     try:
-        from pydantic import BaseModel
+        from pydantic import BaseModel  # type: ignore
         if isinstance(obj, BaseModel):
             return obj.model_dump()
     except Exception:
@@ -38,54 +46,79 @@ def _write_json(path: Path, obj: Any) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(_to_jsonable(obj), f, ensure_ascii=False, indent=2)
 
-async def _run_step(agent, task_id: str, step_id: str, name: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
+def _append_report_line(obj: Dict[str, Any]) -> None:
+    with LOGFILE.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+async def _run_step(agent, task_id: str, step_id: str, name: str, inputs: Dict[str, Any]) -> Any:
+    """Run a single agent step, persist artifact, and update state.json."""
     lease_id = str(uuid.uuid4())
-    upsert_step(task_id, step_id, status="running", attempt=1, lease_id=lease_id, started_at=time.time())
+    t0 = time.time()
+    upsert_step(task_id, step_id, status="running", attempt=1, lease_id=lease_id, started_at=t0)
+    logger.info("Step start: task_id=%s step_id=%s", task_id, step_id)
+
     res = await Runner.run(agent, inputs.get("prompt", ""), context=inputs)
-    output = _to_jsonable(res.final_output)
-    artifacts = {f"{step_id}.json": output}
-    sr = step_result(task_id, step_id, "ok", artifacts, f"{name} completed", metrics={})
+    out = _to_jsonable(res.final_output)
+
+    # Persist artifact to ./data/<task_id>/<step_id>.json and register in state.json
     step_path = DATA_DIR / task_id / f"{step_id}.json"
-    _write_json(step_path, output)
+    _write_json(step_path, out)
     append_artifact(task_id, step_id, f"{step_id}.json", str(step_path))
+
     upsert_step(task_id, step_id, status="ok", lease_id=lease_id, finished_at=time.time())
-    return sr
+    logger.info("Step done: task_id=%s step_id=%s wrote=%s", task_id, step_id, step_path)
 
-def _summarize_done(task_id: str) -> str:
-    return f"Task {task_id} completed; artifacts in {DATA_DIR/task_id} and state in {DATA_DIR/'state.json'}"
+    # Append a progress line for the UI/debug
+    _append_report_line({
+        "task_id": task_id,
+        "status": "stage_done",
+        "stage": step_id,
+        "summary": f"{name} completed",
+    })
+    return out
+
+# ---------- Faust stream processor ----------
 
 @app.agent(task_topic)
 async def handle_tasks(stream):
-    async for task in stream:
+    async for task in stream:  # value_serializer='json' -> dict
         tid = task.get("task_id", str(uuid.uuid4()))
-        prompt = task.get("prompt", "").strip() or "Do nothing"
-        try:
-            upsert_task(tid, {"prompt": prompt})
-            arch = make_architect_agent()
-            await _run_step(arch, tid, "design@v1", "Design", {"prompt": prompt})
-            impl = make_implementer_agent()
-            await _run_step(impl, tid, "implement@v1", "Implement", {"prompt": prompt})
-            tester = make_tester_agent()
-            await _run_step(tester, tid, "test@v1", "Test", {"prompt": prompt})
-            reviewer = make_reviewer_agent()
-            await _run_step(reviewer, tid, "review@v1", "Review", {"prompt": prompt})
-            summary = _summarize_done(tid)
-            await report_topic.send(key=tid.encode(), value=make_report(tid, "done", summary))
-            with LOGFILE.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"task_id": tid, "status": "done", "summary": summary}) + "\n")
-        except Exception as e:
-            err = f"error: {e}"
-            await report_topic.send(key=tid.encode(), value=make_report(tid, "error", err))
-            with LOGFILE.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"task_id": tid, "status": "error", "summary": err}) + "\n")
-
-
-
-@app.agent(task_topic)
-async def handle_tasks(stream):
-    async for task in stream:
-        tid = task.get("task_id") or "?"
         prompt = (task.get("prompt") or "").strip()
         logger.info("Received task_id=%s prompt=%r", tid, prompt)
-        persist_stage(tid, "received", prompt)  # optional immediate record
-        run_pipeline(tid, prompt)
+
+        # Immediate "received" marker so you see activity quickly
+        _append_report_line({"task_id": tid, "status": "received", "summary": prompt})
+
+        try:
+            # Record/initialize task spec in JSON state
+            upsert_task(tid, {"prompt": prompt})
+
+            # 1) Design
+            arch = make_architect_agent()
+            design_out = await _run_step(arch, tid, "design@v1", "Design", {"prompt": prompt})
+
+            # 2) Implement
+            impl = make_implementer_agent()
+            impl_out = await _run_step(impl, tid, "implement@v1", "Implement",
+                                       {"prompt": prompt, "design": design_out})
+
+            # 3) Test
+            tester = make_tester_agent()
+            test_out = await _run_step(tester, tid, "test@v1", "Test",
+                                       {"prompt": prompt, "design": design_out, "impl": impl_out})
+
+            # 4) Review
+            reviewer = make_reviewer_agent()
+            rev_out = await _run_step(reviewer, tid, "review@v1", "Review",
+                                      {"prompt": prompt, "design": design_out, "impl": impl_out, "tests": test_out})
+
+            # Final report
+            summary = f"Task {tid} completed; artifacts in {DATA_DIR / tid} and state in {DATA_DIR / 'state.json'}"
+            await report_topic.send(key=tid.encode(), value=make_report(tid, "done", summary))
+            _append_report_line({"task_id": tid, "status": "done", "summary": summary})
+
+        except Exception as e:
+            err = f"error: {e}"
+            logger.exception("Task failed: task_id=%s", tid)
+            await report_topic.send(key=tid.encode(), value=make_report(tid, "error", err))
+            _append_report_line({"task_id": tid, "status": "error", "summary": err})
