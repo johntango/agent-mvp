@@ -41,7 +41,7 @@ Minimal multi-agent MVP with JSON message serialization, Codespaces support, and
 5. Enqueue a task:
    ```bash
    make send
-   # or: make send TEXT="Implement cursor pagination for /invoices API"
+   # or: Implement cursor pagimake send TEXT="nation for /invoices API"
    ```
 # Agent MVP — Autonomous Multi-Agent Software Worker
 

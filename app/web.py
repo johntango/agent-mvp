@@ -7,6 +7,17 @@ cfg = load_config()
 Path(cfg["DATA_DIR"]).mkdir(parents=True, exist_ok=True)
 LOGFILE = os.path.join(cfg["DATA_DIR"], "reports.jsonl")
 
+REPORTS_PATH = Path(cfg["REPORTS_PATH"])
+
+def read_reports_tail(n: int = 200) -> list[str]:
+    if not REPORTS_PATH.exists():
+        return []
+    with REPORTS_PATH.open("r", encoding="utf-8") as f:
+        lines = f.readlines()
+    return lines[-n:]
+
+
+
 HTML = """
 <!doctype html>
 <html lang="en">

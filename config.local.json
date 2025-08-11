@@ -3,5 +3,5 @@
   "REDPANDA_BROKERS": "localhost:9092",
   "TASK_TOPIC": "agent_tasks",
   "REPORT_TOPIC": "agent_reports",
-  "DATA_DIR": "./data"
+  "DATA_DIR": "workspace/agent-mvp/data"
 }

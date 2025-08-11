@@ -12,11 +12,20 @@ from app.agents import (
 from app.config import load_config
 
 cfg = load_config()
-DATA_DIR = Path(cfg.get("DATA_DIR", "./data"))
+REPORTS_PATH = Path(cfg["REPORTS_PATH"])
+log = logging.getLogger(__name__)
+cfg = load_config()
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+DATA_DIR = Path(cfg["DATA_DIR"])
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 LOGFILE = DATA_DIR / "reports.jsonl"
 LOGFILE.parent.mkdir(parents=True, exist_ok=True)
 LOGFILE.touch(exist_ok=True)
+
+REPORTS_PATH = DATA_DIR / "reports.jsonl"
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("agent-mvp.worker")
@@ -44,6 +53,11 @@ def _write_artifact(task_id: str, step_id: str, value: Any) -> Path:
 def _append_report(obj: Dict[str, Any]) -> None:
     with LOGFILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+def append_report_line(report_dict: dict) -> None:
+    line = json.dumps(report_dict, ensure_ascii=False)
+    with REPORTS_PATH.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 @app.agent(task_topic)
 async def handle_tasks(stream):
@@ -92,3 +106,6 @@ async def handle_tasks(stream):
             logger.exception("Task failed: task_id=%s", tid)
             await report_topic.send(key=tid.encode(), value=make_report(tid, "error", err))
             _append_report({"task_id": tid, "status": "error", "summary": err})
+
+if __name__ == "__main__":
+    app.main()
