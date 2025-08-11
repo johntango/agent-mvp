@@ -1,65 +1,80 @@
 # app/worker.py
 import os, json
-from typing import Any, Tuple
-from agents import Runner
-from app.bus import app, task_topic, report_topic
-from app.agents import make_triage_agent
-from app.config import load_config
 from pathlib import Path
+from typing import Any, Tuple
+
+from agents import Runner
+from app.bus import app, task_topic, report_topic, make_report
+from app.agents import (
+    make_architect_agent, make_implementer_agent,
+    make_tester_agent, make_reviewer_agent
+)
+from app.config import load_config
 
 cfg = load_config()
-Path(cfg["DATA_DIR"]).mkdir(parents=True, exist_ok=True)
-LOGFILE = os.path.join(cfg["DATA_DIR"], "reports.jsonl")
+DATA_DIR = Path(cfg["DATA_DIR"])
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-def _normalize_summary(obj: Any) -> Tuple[str, Any | None]:
-    """Return (summary_text, summary_json). `summary_text` is always a string."""
+def _to_jsonable(obj: Any) -> Any:
+    """Coerce Pydantic models and other objects to JSON-serializable values."""
     try:
-        from pydantic import BaseModel as _BM  # type: ignore
+        from pydantic import BaseModel  # type: ignore
+        if isinstance(obj, BaseModel):
+            return obj.model_dump()
     except Exception:
-        _BM = tuple()  # fallback
-    if isinstance(obj, str):
-        return obj, None
-    if _BM and isinstance(obj, _BM):
-        data = obj.model_dump()
-        return json.dumps(data, ensure_ascii=False), data
-    if isinstance(obj, (dict, list)):
-        return json.dumps(obj, ensure_ascii=False), obj
-    return str(obj), None
+        pass
+    if isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
+        return obj
+    return str(obj)
+
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(obj), f, ensure_ascii=False, indent=2)
 
 @app.agent(task_topic)
 async def handle_tasks(stream):
     async for task in stream:  # dict due to value_serializer='json'
+        tid = task.get("task_id", "unknown")
+        task_dir = DATA_DIR / tid
         try:
-            triage = make_triage_agent()
-            result = await Runner.run(triage, task["prompt"])
+            prompt = task["prompt"]
 
-            summary_text, summary_json = _normalize_summary(result.final_output)
-            report = {
-                "task_id": task["task_id"],
-                "status": "done",
-                "summary": summary_text,
-            }
-            if summary_json is not None:
-                report["summary_json"] = summary_json  # optional structured details
+            # Run each agent explicitly so we can capture results to files
+            arch = make_architect_agent()
+            arch_res = await Runner.run(arch, prompt)
+            _write_json(task_dir / "architect.json", arch_res.final_output)
 
-            # emit to report topic
-            await report_topic.send(key=task["task_id"].encode(), value=report)
+            impl = make_implementer_agent()
+            impl_res = await Runner.run(impl, prompt, context={"design": _to_jsonable(arch_res.final_output)})
+            _write_json(task_dir / "implementer.json", impl_res.final_output)
 
-            # append to JSONL for UI
-            with open(LOGFILE, "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "task_id": task["task_id"],
-                    "status": "done",
-                    "summary": summary_text
-                }) + "\n")
+            tester = make_tester_agent()
+            test_res = await Runner.run(tester, prompt, context={"design": _to_jsonable(arch_res.final_output),
+                                                                 "impl": _to_jsonable(impl_res.final_output)})
+            _write_json(task_dir / "tester.json", test_res.final_output)
+
+            reviewer = make_reviewer_agent()
+            rev_res = await Runner.run(reviewer, prompt, context={"design": _to_jsonable(arch_res.final_output),
+                                                                  "impl": _to_jsonable(impl_res.final_output),
+                                                                  "tests": _to_jsonable(test_res.final_output)})
+            _write_json(task_dir / "reviewer.json", rev_res.final_output)
+
+            # Build a human-readable summary for the report/log
+            summary = f"Task {tid}: artifacts written to {task_dir}"
+            await report_topic.send(
+                key=tid.encode(),
+                value=make_report(tid, "done", summary)
+            )
+
+            # Also append to the JSONL the UI shows
+            with (DATA_DIR / "reports.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"task_id": tid, "status": "done", "summary": summary}) + "\n")
 
         except Exception as e:
             err = f"error: {e}"
-            tid = task.get("task_id", "?") if isinstance(task, dict) else "?"
-            await report_topic.send(key=str(tid).encode(),
-                                    value={"task_id": tid, "status": "error", "summary": err})
-            with open(LOGFILE, "a", encoding="utf-8") as f:
+            await report_topic.send(key=str(tid).encode(), value=make_report(tid, "error", err))
+            with (DATA_DIR / "reports.jsonl").open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"task_id": tid, "status": "error", "summary": err}) + "\n")
-
 if __name__ == "__main__":
     app.main()
