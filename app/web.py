@@ -69,7 +69,7 @@ def create_app():
         if request.method == "POST":
             prompt = request.form.get("prompt","").strip()
             if prompt:
-                subprocess.Popen(["python", "-m", "app.producer", "enqueue", "--text", prompt])
+                subprocess.Popen(["python", "scripts/enqueue.py", "--text", prompt])
         return render_template_string(HTML, rows=rows)
 
     return app
