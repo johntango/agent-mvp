@@ -1,7 +1,6 @@
 import argparse, uuid, json
 from kafka import KafkaProducer
 from app.config import load_config
-from app.bus import make_task
 
 def main():
     parser = argparse.ArgumentParser(description="Enqueue a task to Redpanda")
@@ -19,7 +18,7 @@ def main():
     )
 
     tid = str(uuid.uuid4())
-    msg = make_task(tid, args.text.strip())
+    msg = {"task_id": tid, "prompt": args.text.strip()}
     producer.send(topic, key=tid, value=msg).get(timeout=10)
     producer.flush()
     print(f"Enqueued task {tid}: {args.text} -> topic={topic} brokers={brokers}")

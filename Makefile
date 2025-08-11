@@ -1,6 +1,7 @@
 .PHONY: up down worker web send test
 export PYTHONPATH := $(shell pwd)
-
+export REDPANDA_BROKERS ?= 127.0.0.1:9092
+export DATA_DIR ?= ./data
 up:
 	docker compose up -d
 
@@ -15,7 +16,7 @@ web:
 
 TEXT ?= Implement pagination for /invoices API
 send:
-	python scripts/enqueue.py --text "Implement pagination for /invoices API"
+	python scripts/enqueue_faust.py "$(TEXT)"
 
 test:
 	pytest -q

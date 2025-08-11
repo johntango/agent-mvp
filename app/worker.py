@@ -4,14 +4,23 @@ from typing import Any, Dict
 
 from agents import Runner
 from app.bus import app, task_topic, report_topic, make_report
-from app.agents import make_architect_agent, make_implementer_agent, make_tester_agent, make_reviewer_agent
+from app.agents import make_architect_agent, make_implementer_agent, make_tester_agent, make_reviewer_agent, run_pipeline
 from app.config import load_config
 from app.state_json import upsert_task, upsert_step, append_artifact
 from app.models import step_result
+import logging
 
 cfg = load_config()
 DATA_DIR = Path(cfg["DATA_DIR"]); DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGFILE = DATA_DIR / "reports.jsonl"
+LOGFILE.parent.mkdir(parents=True, exist_ok=True)
+LOGFILE.touch(exist_ok=True)
+
+logger = logging.getLogger("agent-mvp.worker")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+logger.info("Worker starting; brokers=%s data_dir=%s task_topic=%s report_topic=%s",
+            cfg["REDPANDA_BROKERS"], cfg["DATA_DIR"], cfg["TASK_TOPIC"], cfg["REPORT_TOPIC"])
 
 def _to_jsonable(obj: Any) -> Any:
     try:
@@ -69,3 +78,14 @@ async def handle_tasks(stream):
             await report_topic.send(key=tid.encode(), value=make_report(tid, "error", err))
             with LOGFILE.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"task_id": tid, "status": "error", "summary": err}) + "\n")
+
+
+
+@app.agent(task_topic)
+async def handle_tasks(stream):
+    async for task in stream:
+        tid = task.get("task_id") or "?"
+        prompt = (task.get("prompt") or "").strip()
+        logger.info("Received task_id=%s prompt=%r", tid, prompt)
+        persist_stage(tid, "received", prompt)  # optional immediate record
+        run_pipeline(tid, prompt)

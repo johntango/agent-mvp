@@ -62,14 +62,14 @@ def create_app():
                 for line in f:
                     try:
                         rows.append(json.loads(line))
-                    except:
+                    except Exception:
                         pass
             rows = list(reversed(rows))[:50]
 
         if request.method == "POST":
             prompt = request.form.get("prompt","").strip()
             if prompt:
-                subprocess.Popen(["python", "scripts/enqueue.py", "--text", prompt])
+                subprocess.Popen(["python", "scripts/enqueue_faust.py", "--text", prompt])
         return render_template_string(HTML, rows=rows)
 
     return app

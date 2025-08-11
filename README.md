@@ -1,3 +1,17 @@
+# JSON persistence (debug)
+This build writes per-step artifacts and a global state file:
+- `./data/<task_id>/design@v1.json`, `implement@v1.json`, `test@v1.json`, `review@v1.json`
+- `./data/state.json` (tasks, steps, artifacts)
+
+Tail summaries:
+```
+tail -n 20 ./data/reports.jsonl
+```
+Inspect state:
+```
+cat ./data/state.json | jq .
+```
+
 # Agent MVP (OpenAI Agents SDK + Faust/Redpanda + Flask UI)
 
 Minimal multi-agent MVP with JSON message serialization, Codespaces support, and a Bootstrap UI.
