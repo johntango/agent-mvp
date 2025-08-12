@@ -1,5 +1,7 @@
 # Agent-MVP (Faust/Redpanda + OpenAI Agents + Flask UI)
 
+link to https://docs.google.com/document/d/1q3a472cCyPQLtxxhxXWPkCHUrTHQ31YcaKtW77orbfs/edit?usp=sharing 
+
 A minimal yet extensible multi-agent system that accepts natural-language software tasks, executes a four-stage pipeline (Design → Implement → Test → Review), persists artifacts, and exposes a small Bootstrap UI for enqueuing tasks, inspecting reports, and replaying individual agent steps.
 
 This README documents architecture, data flow, configuration, operation, and troubleshooting.
