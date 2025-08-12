@@ -1,9 +1,9 @@
 # app/orchestrator_service.py
 import json, asyncio, logging
+from pathlib import Path
 from app.bus import app, step_results, step_requests, report_topic, make_report, dlq_topic
 from app.config import load_config
-from app.state import finish_step, schedule_retry
-from pathlib import Path
+from app.state import finish_step, schedule_retry, enqueue_step, now   # ← add enqueue_step, now
 
 cfg = load_config()
 logger = logging.getLogger("agent-mvp.orchestrator")
@@ -12,15 +12,11 @@ _CHAIN = ["design@v1", "implement@v1", "test@v1", "review@v1"]
 _BACKOFF = [int(x) for x in cfg["BACKOFF_S"].split(",") if x.strip()]
 _MAX = cfg["MAX_ATTEMPTS"]
 
-
-
-cfg = load_config()
 LOGFILE = Path(cfg["DATA_DIR"]) / "reports.jsonl"
 def _append_report(obj: dict) -> None:
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     with LOGFILE.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj) + "\n")
-
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 def _next_step(step_id: str) -> str | None:
     try:
@@ -38,34 +34,47 @@ async def orchestrator(stream):
 
         if status == "ok":
             finish_step(tid, step_id, "ok", None)
-            _append_report({"task_id": tid, "status": "next", "stage": step_id, "summary": f"Enqueue {_next_step(step_id)}"})
             nxt = _next_step(step_id)
             if nxt:
+                # create step row so worker can claim it
+                enqueue_step(tid, nxt)
+                _append_report({"task_id": tid, "status": "next", "stage": step_id,
+                                "summary": f"Enqueue {nxt}"})
                 await step_requests.send(key=tid.encode(), value={
                     "task_id": tid, "step_id": nxt, "attempt": 0, "inputs": {}
                 })
             else:
-                # task done
-                _append_report({"task_id": tid, "status": "done", "summary": f"Task {tid} completed"})
-                await report_topic.send(key=tid.encode(), value=make_report(tid, "done", f"Task {tid} completed"))
+                _append_report({"task_id": tid, "status": "done",
+                                "summary": f"Task {tid} completed"})
+                await report_topic.send(
+                    key=tid.encode(),
+                    value=make_report(tid, "done", f"Task {tid} completed")
+                )
         else:
             # failure path with retry/backoff
             if attempt < _MAX:
                 backoff_s = _BACKOFF[min(attempt-1, len(_BACKOFF)-1)]
-                schedule_retry(tid, step_id, not_before_ts=float(backoff_s))
-                logger.warning("Scheduling retry: task=%s step=%s attempt=%s backoff=%ss", tid, step_id, attempt+1, backoff_s)
+                # store an absolute not_before (optional; claim_step currently ignores it)
+                schedule_retry(tid, step_id, not_before_ts=now() + float(backoff_s))
+                logger.warning("Scheduling retry: task=%s step=%s attempt=%s backoff=%ss",
+                               tid, step_id, attempt+1, backoff_s)
                 _append_report({"task_id": tid, "status": "retry", "stage": step_id,
-                "summary": f"Attempt {attempt+1} after {backoff_s}s"})
-                await asyncio.sleep(backoff_s)   # simple timer; replace w/ delayed-queue later
+                                "summary": f"Attempt {attempt+1} after {backoff_s}s"})
+                await asyncio.sleep(backoff_s)   # simple timer; replace with delayed queue later
+                # Ensure the step exists and is in a claimable state
+                enqueue_step(tid, step_id)
                 await step_requests.send(key=tid.encode(), value={
                     "task_id": tid, "step_id": step_id, "attempt": attempt, "inputs": {}
                 })
             else:
                 finish_step(tid, step_id, "fail", res.get("error"))
                 _append_report({"task_id": tid, "status": "error", "stage": step_id,
-                "summary": f"Failed after {attempt} attempts"})
+                                "summary": f"Failed after {attempt} attempts"})
                 await dlq_topic.send(key=tid.encode(), value=res)
-                await report_topic.send(key=tid.encode(), value=make_report(tid, "error", f"{step_id} failed after {attempt} attempts"))
+                await report_topic.send(
+                    key=tid.encode(),
+                    value=make_report(tid, "error", f"{step_id} failed after {attempt} attempts")
+                )
 
 if __name__ == "__main__":
     app.main()
