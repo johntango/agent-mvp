@@ -53,6 +53,47 @@ def append_report_line(report_dict: dict) -> None:
     with REPORTS_PATH.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
 
+def _read_json(path: Path):
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _get_original_prompt_from_reports(task_id: str) -> str | None:
+    # first 'received' line for this task contains the original prompt
+    try:
+        with (DATA_DIR / "reports.jsonl").open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("task_id") == task_id and obj.get("status") == "received":
+                    return obj.get("summary")
+    except FileNotFoundError:
+        pass
+    return None
+
+def _artifact_path(task_id: str, step_id: str, attempt: int | None = None) -> Path:
+    base = DATA_DIR / task_id
+    if attempt is None:
+        return base / f"{step_id}.json"
+    return base / f"{step_id}.attempt{attempt}.json"
+
+def _next_attempt_index(task_id: str, step_id: str) -> int:
+    base = DATA_DIR / task_id
+    if not base.exists():
+        return 1
+    n = 1
+    for p in base.glob(f"{step_id}.attempt*.json"):
+        try:
+            idx = int(p.stem.split(".attempt")[-1])
+            n = max(n, idx + 1)
+        except Exception:
+            pass
+    return n
+
 @app.agent(task_topic)
 async def handle_tasks(stream):
     async for task in stream:  # value_serializer='json' => dict
@@ -60,7 +101,64 @@ async def handle_tasks(stream):
         prompt = (task.get("prompt") or "").strip()
         logger.info("Received task_id=%s prompt=%r", tid, prompt)
         _append_report({"task_id": tid, "status": "received", "summary": prompt})
+        action = (task.get("action") or "").strip()
+        if action == "replay_step":
+            step_id = task.get("step_id")
+            reason = (task.get("reason") or "").strip()
+            logger.info("Replay requested: task_id=%s step_id=%s reason=%r", tid, step_id, reason)
+            _append_report({"task_id": tid, "status": "replay_request", "stage": step_id, "summary": f"Replay requested: {reason}"})
 
+            # reconstruct minimal context
+            prompt = _get_original_prompt_from_reports(tid) or ""
+            design_out = _read_json(_artifact_path(tid, "design@v1"))
+            impl_out   = _read_json(_artifact_path(tid, "implement@v1"))
+            test_out   = _read_json(_artifact_path(tid, "test@v1"))
+
+            # choose agent + inputs
+            if step_id == "design@v1":
+                agent = make_architect_agent()
+                ctx = {"prompt": prompt}
+                name = "Design"
+            elif step_id == "implement@v1":
+                agent = make_implementer_agent()
+                if design_out is None:
+                    raise RuntimeError("Cannot replay implement@v1: missing design@v1 artifact")
+                ctx = {"prompt": prompt, "design": design_out}
+                name = "Implement"
+            elif step_id == "test@v1":
+                agent = make_tester_agent()
+                if design_out is None or impl_out is None:
+                    raise RuntimeError("Cannot replay test@v1: missing design/implement artifacts")
+                ctx = {"prompt": prompt, "design": design_out, "impl": impl_out}
+                name = "Test"
+            elif step_id == "review@v1":
+                agent = make_reviewer_agent()
+                if design_out is None or impl_out is None or test_out is None:
+                    raise RuntimeError("Cannot replay review@v1: missing prior artifacts")
+                ctx = {"prompt": prompt, "design": design_out, "impl": impl_out, "tests": test_out}
+                name = "Review"
+            else:
+                raise RuntimeError(f"Unknown step_id: {step_id}")
+
+            # run and version the artifact
+            r = await Runner.run(agent, prompt, context=ctx)
+            out = _to_jsonable(r.final_output)
+
+            attempt = _next_attempt_index(tid, step_id)
+            # keep a versioned copy and overwrite the canonical
+            p_ver = _artifact_path(tid, step_id, attempt)
+            p_cur = _artifact_path(tid, step_id, None)
+            p_ver.parent.mkdir(parents=True, exist_ok=True)
+            with p_ver.open("w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False, indent=2)
+            with p_cur.open("w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False, indent=2)
+
+            _append_report({"task_id": tid, "status": "stage_done", "stage": step_id, "summary": f"{name} replayed (attempt {attempt})"})
+            await report_topic.send(key=tid.encode(), value=make_report(tid, "replayed", f"{name} replayed (attempt {attempt})"))
+            logger.info("Replay done: task_id=%s step_id=%s attempt=%s", tid, step_id, attempt)
+            # continue (do not run the normal full pipeline)
+            continue
         try:
             # 1) Design
             arch = make_architect_agent()

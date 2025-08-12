@@ -14,3 +14,6 @@ TEXT ?= Implement pagination for /invoices API
 
 send:
 	python scripts/enqueue_async.py --text "$(TEXT)"
+
+replay:
+	python scripts/replay_async.py --task-id "$(TASK_ID)" --step "$(STEP)" --reason "$(REASON)"
