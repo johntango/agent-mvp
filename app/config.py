@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 
 def load_config():
+    GITHUB_TOKEN = os.getenv("CODEGEN_KEY")
     return {
+        "GITHUB_TOKEN": GITHUB_TOKEN,
         "DATA_DIR": os.getenv("DATA_DIR", "./data"),
         "REPORTS_PATH": os.getenv("REPORTS_PATH", "./data/reports.jsonl"),
         "REDPANDA_BROKERS": os.getenv("REDPANDA_BROKERS", "127.0.0.1:9092"),
@@ -18,10 +20,10 @@ def load_config():
         "LEASE_TTL_S": int(os.getenv("LEASE_TTL_S", "1200")),
 
         # New GitHub integration config
-        "GITHUB_REPO": os.getenv("GITHUB_REPO", "johntango/agent-mvp-target"),
+        "GITHUB_REPO": os.getenv("GITHUB_REPO", "johntango/autoGenCode"),
         "GIT_BASE": os.getenv("GIT_BASE", "main"),
-        "TARGET_REPO_URL": os.getenv("TARGET_REPO_URL", "https://github.com/johntango/agent-mvp-target.git"),
-        "TARGET_REPO_PATH": os.getenv("TARGET_REPO_PATH", "./target_repo"),
+        "TARGET_REPO_URL": os.getenv("TARGET_REPO_URL", "https://github.com/johntango/autoGenCode.git"),
+        "TARGET_REPO_PATH": os.getenv("TARGET_REPO_PATH", "./autoGenCode"),
         "GITHUB_PAT": os.getenv("GITHUB_PAT", ""),  # optional personal access token for push
         "STATE_DB": os.getenv("STATE_DB", "./data/state.sqlite"),
         # extermal services
