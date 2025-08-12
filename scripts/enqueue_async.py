@@ -1,3 +1,4 @@
+# scripts/enqueue_async.py  (ensure this exact producer is used by Makefile/UI)
 import argparse, asyncio, json, uuid, os
 from aiokafka import AIOKafkaProducer
 
@@ -5,9 +6,9 @@ def env(name, default):
     return os.environ.get(name, default)
 
 async def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--text", dest="text", required=True, help="Task description")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument("--text", required=True, help="Task description")
+    args = p.parse_args()
 
     brokers = env("REDPANDA_BROKERS", "127.0.0.1:9092")
     topic   = env("TASK_TOPIC", "agent_tasks")
