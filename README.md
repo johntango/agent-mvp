@@ -1,8 +1,37 @@
 # Agent-MVP (Faust/Redpanda + OpenAI Agents + Flask UI)
 
+link to https://docs.google.com/document/d/1q3a472cCyPQLtxxhxXWPkCHUrTHQ31YcaKtW77orbfs/edit?usp=sharing 
+
 A minimal yet extensible multi-agent system that accepts natural-language software tasks, executes a four-stage pipeline (Design → Implement → Test → Review), persists artifacts, and exposes a small Bootstrap UI for enqueuing tasks, inspecting reports, and replaying individual agent steps.
 
 This README documents architecture, data flow, configuration, operation, and troubleshooting.
+----
+
+# 0) Start Redpanda (as you already do)
+docker rm -f redpanda 2>/dev/null || true
+docker run -d --name=redpanda \
+  -p 9092:9092 -p 9644:9644 \
+  redpandadata/redpanda:v24.3.18 \
+  redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M \
+  --node-id 0 --check=false \
+  --kafka-addr PLAINTEXT://0.0.0.0:9092 \
+  --advertise-kafka-addr PLAINTEXT://127.0.0.1:9092
+
+# 1) Start services (each in its own terminal from repo root)
+export REDPANDA_BROKERS=127.0.0.1:9092
+export DATA_DIR=./data
+make planner
+make worker
+make orchestrator
+make web    # open http://localhost:5000
+
+# 2) Enqueue a task
+make send TEXT="Write a tiny Python program that prints 'Hello Earthling'"
+
+# 3) Inspect artifacts
+tail -n 50 ./data/reports.jsonl     # (planner writes 'received'; orchestrator writes 'done' on completion)
+ls -la ./data/<task_id>             # design@v1.json, implement@v1.json, test@v1.json, review@v1.json
+sqlite3 ./data/state.sqlite '.schema' '.tables'
 
 ---
 

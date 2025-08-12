@@ -1,46 +1,24 @@
-from __future__ import annotations
-from pathlib import Path
-import json, os, typing as t
+import os
 
-def _repo_root() -> Path:
-    # Works for: `python -m app.worker`, scripts, and most envs.
-    if "__file__" in globals():
-        return Path(__file__).resolve().parents[1]
-    # Interactive / exotic launchers: walk up from cwd
-    cwd = Path().resolve()
-    for parent in [cwd, *cwd.parents]:
-        if (parent / ".git").exists() or (parent / "pyproject.toml").exists():
-            return parent
-    return cwd
+def load_config():
+    return {
+        # broker + topics
+        "REDPANDA_BROKERS": os.getenv("REDPANDA_BROKERS", "127.0.0.1:9092"),
+        "TASK_TOPIC": os.getenv("TASK_TOPIC", "agent_tasks"),
+        "REPORT_TOPIC": os.getenv("REPORT_TOPIC", "agent_reports"),
+        "STEP_REQUESTS_TOPIC": os.getenv("STEP_REQUESTS_TOPIC", "step_requests"),
+        "STEP_RESULTS_TOPIC": os.getenv("STEP_RESULTS_TOPIC", "step_results"),
+        "DLQ_TOPIC": os.getenv("DLQ_TOPIC", "agent_dlq"),
 
-def load_config() -> dict[str, t.Any]:
-    root = _repo_root()
-    cfg: dict[str, t.Any] = {
-        "OPENAI_MODEL": "gpt-4o-mini",
-        "REDPANDA_BROKERS": "localhost:9092",
-        "TASK_TOPIC": "agent_tasks",
-        "REPORT_TOPIC": "agent_reports",
-        "DATA_DIR": "data",  # default relative to repo root
+        # local persistence
+        "DATA_DIR": os.getenv("DATA_DIR", "./data"),
+        "STATE_DB": os.getenv("STATE_DB", "./data/state.sqlite"),
+
+        # leases & retries
+        "LEASE_TTL_S": int(os.getenv("LEASE_TTL_S", "1200")),
+        "MAX_ATTEMPTS": int(os.getenv("MAX_ATTEMPTS", "3")),
+        "BACKOFF_S": os.getenv("BACKOFF_S", "60,300,1800"),
+
+        # faust web dashboard port (overridden per-process via env)
+        "WEB_PORT": int(os.getenv("WEB_PORT", "6066")),
     }
-
-    # 1) JSON overrides (your config_local.json)
-    json_path = root / "config.local.json"
-    if json_path.exists():
-        cfg.update(json.loads(json_path.read_text()))
-
-    # 2) Env overrides
-    for k in list(cfg.keys()):
-        v = os.getenv(k)
-        if v is not None:
-            cfg[k] = v
-
-    # 3) Normalize DATA_DIR to absolute
-    data_dir = Path(cfg["DATA_DIR"])
-    if not data_dir.is_absolute():
-        data_dir = (root / data_dir).resolve()
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    cfg["DATA_DIR"] = str(data_dir)
-    cfg["REPORTS_PATH"] = str(data_dir / "reports.jsonl")
-    print(cfg)
-    return cfg

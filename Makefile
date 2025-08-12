@@ -1,19 +1,23 @@
+PYTHON ?= python
 export PYTHONPATH := $(shell pwd)
 export REDPANDA_BROKERS ?= 127.0.0.1:9092
 export DATA_DIR ?= ./data
-TEXT ?= "Write a python program to say 'Hello'"
-
-worker:
-	python -m app.worker worker -l info
-
-web:
-	python -m app.web
-
-
 TEXT ?= Implement pagination for /invoices API
 
-send:
-	python scripts/enqueue_async.py --text "$(TEXT)"
+# Faust services — each on its own web port
+planner:
+	WEB_PORT=6066 $(PYTHON) -m app.planner_service worker -l info
 
-replay:
-	python scripts/replay_async.py --task-id "$(TASK_ID)" --step "$(STEP)" --reason "$(REASON)"
+worker:
+	WEB_PORT=6067 $(PYTHON) -m app.worker worker -l info
+
+orchestrator:
+	WEB_PORT=6068 $(PYTHON) -m app.orchestrator_service worker -l info
+
+# Flask UI
+web:
+	$(PYTHON) -m app.web
+
+# Enqueue a new task (aiokafka producer)
+send:
+	$(PYTHON) scripts/enqueue_async.py --text "$(TEXT)"
