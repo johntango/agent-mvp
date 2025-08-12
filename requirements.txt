@@ -6,3 +6,4 @@ uvloop; platform_system != "Windows"
 pytest>=8.0.0
 click>=8.1.0
 kafka-python>=2.0.2
+aiokafka>=0.10.0

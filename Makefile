@@ -1,6 +1,6 @@
 export PYTHONPATH := $(shell pwd)
 export REDPANDA_BROKERS ?= 127.0.0.1:9092
-export DATA_DIR ?= PYTHONPATH/data
+export DATA_DIR ?= ./data
 TEXT ?= "Write a python program to say 'Hello'"
 
 worker:
@@ -9,5 +9,8 @@ worker:
 web:
 	python -m app.web
 
+
+TEXT ?= Implement pagination for /invoices API
+
 send:
-	python scripts/enqueue_faust.py --text "$(TEXT)"
+	python scripts/enqueue_async.py --text "$(TEXT)"

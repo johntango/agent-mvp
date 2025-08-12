@@ -12,10 +12,6 @@ from app.agents import (
 from app.config import load_config
 
 cfg = load_config()
-REPORTS_PATH = Path(cfg["REPORTS_PATH"])
-log = logging.getLogger(__name__)
-cfg = load_config()
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DATA_DIR = Path(cfg["DATA_DIR"])
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -23,8 +19,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGFILE = DATA_DIR / "reports.jsonl"
 LOGFILE.parent.mkdir(parents=True, exist_ok=True)
 LOGFILE.touch(exist_ok=True)
-
-REPORTS_PATH = DATA_DIR / "reports.jsonl"
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

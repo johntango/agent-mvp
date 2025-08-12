@@ -42,4 +42,5 @@ def load_config() -> dict[str, t.Any]:
 
     cfg["DATA_DIR"] = str(data_dir)
     cfg["REPORTS_PATH"] = str(data_dir / "reports.jsonl")
+    print(cfg)
     return cfg
