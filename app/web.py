@@ -120,6 +120,11 @@ HTML_TASK_DETAIL = """
 <div class="mb-3">
   <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('tasks') }}">Back to tasks</a>
 </div>
+<h4 class="mt-4">Integration</h4>
+<ul>
+  <li>Pull Request: {% if pr_url %}<a href="{{ pr_url }}" target="_blank">{{ pr_url }}</a>{% else %}<span class="text-muted">—</span>{% endif %}</li>
+  <li>CI Status: {{ ci_status or "—" }}</li>
+</ul>
 
 <h4>Artifacts</h4>
 <table class="table table-striped">
@@ -193,6 +198,11 @@ def create_app():
       task_dir = DATA_DIR / task_id
       artifacts = {s: [] for s in ["design@v1","implement@v1","test@v1","review@v1"]}
       previews = {}
+
+      events = _load_reports_for_task(task_id)
+      pr_url = next((e.get("summary","").split("PR: ",1)[-1] for e in events if e.get("status")=="pr_opened"), None)
+      ci_status = next((e.get("summary") for e in events if e.get("status")=="ci_done"), None)
+
       if task_dir.exists():
           for p in sorted(task_dir.glob("*.json")):
               # map to step key
@@ -222,6 +232,20 @@ def create_app():
     # register base template
 
   return app
+
+def _load_reports_for_task(task_id: str, limit: int = 1000):
+    rows = []
+    if LOGFILE.exists():
+        with LOGFILE.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("task_id") == task_id:
+                    rows.append(obj)
+    return rows[-limit:]
+
 
 def _load_reports(limit: int = 200):
     rows = []

@@ -21,3 +21,6 @@ web:
 # Enqueue a new task (aiokafka producer)
 send:
 	$(PYTHON) scripts/enqueue_async.py --text "$(TEXT)"
+
+ci_monitor:
+	WEB_PORT=6069 $(PYTHON) -m app.ci_monitor_service worker -l info

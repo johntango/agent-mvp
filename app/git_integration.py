@@ -1,0 +1,160 @@
+import os, subprocess, shlex
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+import requests  # pip install requests
+
+def _run(cmd: str, cwd: Path, env: Optional[dict] = None) -> Tuple[int, str, str]:
+    e = os.environ.copy()
+    if env:
+        e.update(env)
+    p = subprocess.Popen(shlex.split(cmd), cwd=str(cwd), env=e,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out, err = p.communicate()
+    return p.returncode, out.strip(), err.strip()
+
+def _gh_api(method: str, endpoint: str, token: str, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    url = f"https://api.github.com{endpoint}"
+    r = requests.request(method, url, headers=headers, json=data, params=params, timeout=30)
+    r.raise_for_status()
+    return r.json() if r.text else {}
+
+def ensure_repo(target_path: Path, repo_url: Optional[str]) -> None:
+    target_path.mkdir(parents=True, exist_ok=True)
+    if not (target_path / ".git").exists():
+        if repo_url:
+            code, out, err = _run(f"git clone {shlex.quote(repo_url)} .", cwd=target_path)
+            if code != 0:
+                raise RuntimeError(f"git clone failed: {err or out}")
+        else:
+            code, out, err = _run("git init", cwd=target_path)
+            if code != 0:
+                raise RuntimeError(f"git init failed: {err or out}")
+
+def ensure_remote(target_path: Path, repo_https_url_with_auth: str) -> None:
+    code, out, _ = _run("git remote -v", cwd=target_path)
+    if "origin" not in out:
+        code, out, err = _run(f"git remote add origin {shlex.quote(repo_https_url_with_auth)}", cwd=target_path)
+        if code != 0:
+            raise RuntimeError(f"git remote add failed: {err or out}")
+
+def checkout_base(target_path: Path, base_branch: str) -> None:
+    _run("git fetch origin --prune", cwd=target_path)
+    _run(f"git checkout -B {shlex.quote(base_branch)} origin/{base_branch} || git checkout -B {shlex.quote(base_branch)}", cwd=target_path)
+
+def checkout_feature(target_path: Path, branch: str, base: str) -> None:
+    _run("git fetch origin --prune", cwd=target_path)
+    _run(f"git checkout -B {shlex.quote(branch)} origin/{base} || git checkout -B {shlex.quote(branch)} {shlex.quote(base)}", cwd=target_path)
+
+def write_files(target_path: Path, files: List[Dict[str, str]]) -> None:
+    for f in files:
+        p = target_path / f["path"]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f["content"], encoding="utf-8")
+
+def commit_all(target_path: Path, message: str, author: Optional[str] = None) -> None:
+    _run("git add -A", cwd=target_path)
+    cmd = f'git commit -m {shlex.quote(message)}'
+    if author:
+        cmd += f' --author {shlex.quote(author)}'
+    code, out, err = _run(cmd, cwd=target_path)
+    if code != 0 and "nothing to commit" not in (out + err).lower():
+        raise RuntimeError(f"git commit failed: {err or out}")
+
+def push_branch(target_path: Path, branch: str) -> None:
+    code, out, err = _run(f"git push -u origin {shlex.quote(branch)}", cwd=target_path)
+    if code != 0:
+        raise RuntimeError(f"git push failed: {err or out}")
+
+def open_pr(owner_repo: str, head_branch: str, base_branch: str, title: str, body: str, token: str) -> Dict[str, Any]:
+    owner, repo = owner_repo.split("/", 1)
+    # Try create; if exists, fetch existing
+    try:
+        pr = _gh_api("POST", f"/repos/{owner}/{repo}/pulls", token, {
+            "title": title,
+            "head": head_branch,
+            "base": base_branch,
+            "body": body,
+            "maintainer_can_modify": True
+        })
+    except requests.HTTPError:
+        prs = _gh_api("GET", f"/repos/{owner}/{repo}/pulls", token, params={"head": f"{owner}:{head_branch}", "state": "open"})
+        if isinstance(prs, list) and prs:
+            pr = prs[0]
+        else:
+            raise
+    return pr
+
+def ensure_actions_workflow(target_path: Path) -> None:
+    wf = target_path / ".github" / "workflows" / "agent-ci.yml"
+    if wf.exists():
+        return
+    wf.parent.mkdir(parents=True, exist_ok=True)
+    wf.write_text("""name: agent-ci
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "**/*.py"
+      - "tests/**"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f test-requirements.txt ]; then pip install -r test-requirements.txt; fi
+          pip install pytest
+      - name: Run tests
+        run: pytest -q
+""", encoding="utf-8")
+
+def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, Any], tests: Dict[str, Any]) -> Dict[str, Any]:
+    owner_repo = os.environ.get("GITHUB_REPO")             # e.g. johntango/your-repo
+    token = os.environ.get("GITHUB_TOKEN")                  # PAT or fine-grained token (repo scope)
+    base = os.environ.get("GIT_BASE", "main")
+    repo_url = os.environ.get("TARGET_REPO_URL")           # optional
+    repo_path = Path(os.environ.get("TARGET_REPO_PATH", "./target_repo")).resolve()
+    if not owner_repo or not token:
+        raise RuntimeError("GITHUB_REPO and GITHUB_TOKEN must be set")
+
+    https_url = f"https://github.com/{owner_repo}.git"
+    auth_url = f"https://{token}:x-oauth-basic@github.com/{owner_repo}.git"
+
+    ensure_repo(repo_path, repo_url or https_url)
+    ensure_remote(repo_path, auth_url)
+    checkout_base(repo_path, base)
+
+    branch = f"task/{task_id}"
+    checkout_feature(repo_path, branch, base)
+
+    files: List[Dict[str, str]] = []
+    files += (impl.get("files") or [])
+    files += (tests.get("test_files") or [])
+    if not files:
+        files = [{"path": f"generated/{task_id}/hello.py", "content": 'print("Hello from agent task")\n'}]
+
+    write_files(repo_path, files)
+    ensure_actions_workflow(repo_path)
+    commit_all(repo_path, f"Task {task_id}: implement + tests\n\n{design.get('design_summary','')}")
+    push_branch(repo_path, branch)
+
+    code, out, _ = _run("git rev-parse HEAD", cwd=repo_path)
+    head_sha = out.strip() if code == 0 else ""
+    pr = open_pr(owner_repo, branch, base, f"Agent Task {task_id}", "Automated PR by agent orchestrator.", token)
+    return {
+        "repo": owner_repo,
+        "pr_url": pr.get("html_url"),
+        "pr_number": pr.get("number"),
+        "head_sha": head_sha,
+        "head_ref": branch,
+    }

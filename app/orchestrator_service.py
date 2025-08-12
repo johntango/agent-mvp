@@ -37,21 +37,43 @@ async def orchestrator(stream):
         attempt = int(res.get("attempt", 1))
 
         if status == "ok":
+            # ...inside orchestrator(), when status == "ok":
             finish_step(tid, step_id, "ok", None)
             nxt = _next_step(step_id)
             if nxt:
-                # Ensure worker can claim the next step
-                enqueue_step(tid, nxt)   # ← critical
-                _append_report({"task_id": tid, "status": "next", "stage": step_id,
-                                "summary": f"Enqueue {nxt}"})
+                enqueue_step(tid, nxt)
+                _append_report({"task_id": tid, "status": "next", "stage": step_id, "summary": f"Enqueue {nxt}"})
                 await step_requests.send(key=tid.encode(), value={
-                    "task_id": tid, "step_id": nxt, "attempt": 0, "inputs": {}  # worker will rehydrate
+                    "task_id": tid, "step_id": nxt, "attempt": 0, "inputs": {}
                 })
             else:
-                _append_report({"task_id": tid, "status": "done",
-                                "summary": f"Task {tid} completed"})
-                await report_topic.send(key=tid.encode(),
-                                        value=make_report(tid, "done", f"Task {tid} completed"))
+                # REVIEW completed → open PR with generated code + tests
+                try:
+                    data_dir = Path(cfg["DATA_DIR"]) / tid
+                    design = json.loads((data_dir / "design@v1.json").read_text(encoding="utf-8"))
+                    impl   = json.loads((data_dir / "implement@v1.json").read_text(encoding="utf-8"))
+                    tests  = json.loads((data_dir / "test@v1.json").read_text(encoding="utf-8"))
+
+                    pr_info = prepare_repo_and_pr(tid, design, impl, tests)
+                    pr_url = pr_info.get("pr_url")
+                    _append_report({"task_id": tid, "status": "pr_opened", "summary": f"PR: {pr_url}"})
+                    await report_topic.send(key=tid.encode(), value=make_report(tid, "pr", f"Opened PR: {pr_url}"))
+
+                    # Enqueue CI monitor
+                    await ci_watch.send(key=tid.encode(), value={
+                        "task_id": tid,
+                        "repo": pr_info.get("repo"),
+                        "pr_number": pr_info.get("pr_number"),
+                        "head_sha": pr_info.get("head_sha"),
+                        "head_ref": pr_info.get("head_ref"),
+                    })
+                except Exception as e:
+                    _append_report({"task_id": tid, "status": "error", "summary": f"PR error: {e}"})
+                    await report_topic.send(key=tid.encode(), value=make_report(tid, "error", f"PR error: {e}"))
+
+                # Final done marker (independent of CI result)
+                _append_report({"task_id": tid, "status": "done", "summary": f"Task {tid} completed"})
+                await report_topic.send(key=tid.encode(), value=make_report(tid, "done", f"Task {tid} completed"))
 
         else:
             # failure path with retry/backoff
