@@ -1,14 +1,15 @@
-from typing import Dict, Any
+# app/agents.py
+from typing import List
 from pydantic import BaseModel
 from agents import Agent, Runner
 
 class Design(BaseModel):
     design_summary: str
-    files_touched: list[str]
+    files_touched: List[str]
 
 class ImplResult(BaseModel):
     diff_summary: str
-    code_snippets: list[str]
+    code_snippets: List[str]
 
 class TestResult(BaseModel):
     tests_added: int
@@ -17,65 +18,41 @@ class TestResult(BaseModel):
 
 class ReviewResult(BaseModel):
     approved: bool
-    comments: list[str]
+    comments: List[str]
 
-def make_architect_agent():
+def make_architect_agent() -> Agent:
     return Agent(
         name="Architect",
         instructions=(
-            "You are a software architect. Produce a succinct design plan for the task. "
-            "List key files/modules to touch. Output only the structured fields."
+            "Given a software task, produce a succinct design plan and list files_touched."
         ),
         output_type=Design,
     )
 
-def make_implementer_agent():
+def make_implementer_agent() -> Agent:
     return Agent(
         name="Implementer",
         instructions=(
-            "You implement the design into code. Provide a short textual diff summary and "
-            "include minimal code snippets (not full files). Output only the structured fields."
+            "Apply the design with minimal diffs. Return a short diff_summary and a few code_snippets."
         ),
         output_type=ImplResult,
     )
 
-def make_tester_agent():
+def make_tester_agent() -> Agent:
     return Agent(
         name="Tester",
         instructions=(
-            "You generate tests that verify the change and run them conceptually. "
-            "Report counts: tests_added, passed, failed. Output only the structured fields."
+            "Generate tests that verify the change and conceptually run them. "
+            "Report tests_added, passed, failed."
         ),
         output_type=TestResult,
     )
 
-def make_reviewer_agent():
+def make_reviewer_agent() -> Agent:
     return Agent(
         name="Reviewer",
         instructions=(
-            "You perform code review on the change. "
-            "Set approved true only if no blockers remain; include brief comments."
+            "Review the change. Approve only if no blockers remain; include brief comments."
         ),
         output_type=ReviewResult,
     )
-
-def make_triage_agent():
-    arch = make_architect_agent()
-    impl = make_implementer_agent()
-    test = make_tester_agent()
-    rev = make_reviewer_agent()
-
-    return Agent(
-        name="Triage",
-        instructions=(
-            "You receive a software task description. "
-            "Route work to Architect -> Implementer -> Tester -> Reviewer in that order. "
-            "Return a compact human-readable summary of the overall outcome."
-        ),
-        handoffs=[arch, impl, test, rev],
-    )
-
-async def run_pipeline(task_text: str, context=None) -> Dict[str, Any]:
-    triage = make_triage_agent()
-    result = await Runner.run(triage, task_text, context=context)
-    return {"final_output": result.final_output}

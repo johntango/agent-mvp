@@ -1,3 +1,24 @@
+# JSON persistence (debug)
+This build writes per-step artifacts and a global state file:
+- `./data/<task_id>/design@v1.json`, `implement@v1.json`, `test@v1.json`, `review@v1.json`
+- `./data/state.json` (tasks, steps, artifacts)
+
+docker rm -f redpanda 2>/dev/null || true
+docker run -d --name=redpanda -p 9092:9092 -p 9644:9644 \
+  redpandadata/redpanda:v24.3.18 \
+  redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M \
+  --node-id 0 --check=false \
+  --kafka-addr PLAINTEXT://0.0.0.0:9092 \
+  --advertise-kafka-addr PLAINTEXT://127.0.0.1:9092
+Tail summaries:
+```
+tail -n 20 ./data/reports.jsonl
+```
+Inspect state:
+```
+cat ./data/state.json | jq .
+```
+
 # Agent MVP (OpenAI Agents SDK + Faust/Redpanda + Flask UI)
 
 Minimal multi-agent MVP with JSON message serialization, Codespaces support, and a Bootstrap UI.
@@ -27,7 +48,7 @@ Minimal multi-agent MVP with JSON message serialization, Codespaces support, and
 5. Enqueue a task:
    ```bash
    make send
-   # or: make send TEXT="Implement cursor pagination for /invoices API"
+   # or: Implement cursor pagimake send TEXT="nation for /invoices API"
    ```
 # Agent MVP — Autonomous Multi-Agent Software Worker
 
@@ -182,7 +203,7 @@ make web
 make send
 
 # or custom text
-make send TEXT="Implement pagination for /invoices API"
+docker run -d --name=redpanda -p 9092:9092 -p 9644:9644 redpandadata/redpanda:v24.3.18 \     redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M --node-id 0 --check=false \     --kafka-addr PLAINTEXT://0.0.0.0:9092 --advertise-kafka-addr PLAINTEXT://localhost:9092Implement pagination for /invoices API"
 ```
 
 The task is published to `agent_tasks`. The worker processes it and writes a summary to `agent_reports` and to `./data/reports.jsonl`. The UI lists recent reports.

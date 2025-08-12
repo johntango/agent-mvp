@@ -7,6 +7,16 @@ cfg = load_config()
 Path(cfg["DATA_DIR"]).mkdir(parents=True, exist_ok=True)
 LOGFILE = os.path.join(cfg["DATA_DIR"], "reports.jsonl")
 
+REPORTS_PATH = Path(cfg["REPORTS_PATH"])
+
+def read_reports_tail(n: int = 200) -> list[str]:
+    if not REPORTS_PATH.exists():
+        return []
+    with REPORTS_PATH.open("r", encoding="utf-8") as f:
+        lines = f.readlines()
+    return lines[-n:]
+
+
 HTML = """
 <!doctype html>
 <html lang="en">
@@ -62,14 +72,14 @@ def create_app():
                 for line in f:
                     try:
                         rows.append(json.loads(line))
-                    except:
+                    except Exception:
                         pass
             rows = list(reversed(rows))[:50]
 
         if request.method == "POST":
             prompt = request.form.get("prompt","").strip()
             if prompt:
-                subprocess.Popen(["python", "scripts/enqueue.py", "--text", prompt])
+                subprocess.Popen(["python", "scripts/enqueue_async.py", "--text", prompt])
         return render_template_string(HTML, rows=rows)
 
     return app
