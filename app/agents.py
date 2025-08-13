@@ -2,6 +2,7 @@
 from typing import List
 from pydantic import BaseModel
 from agents import Agent, Runner
+from app.plan_models import Plan, STEP_CATALOG
 
 class Design(BaseModel):
     design_summary: str
@@ -19,6 +20,21 @@ class TestResult(BaseModel):
 class ReviewResult(BaseModel):
     approved: bool
     comments: List[str]
+
+def make_planner_agent() -> Agent:
+    catalog_str = ", ".join(sorted(STEP_CATALOG))
+    return Agent(
+        name="Planner",
+        instructions=(
+            "You are a software planning assistant. Given a task prompt, produce a JSON Plan that:\n"
+            f"- Uses only these step ids: {catalog_str}\n"
+            "- Is a DAG (no cycles) with explicit depends_on.\n"
+            "- Includes success_criteria for each step.\n"
+            "- Keep steps minimal; at most 4 in this starter system.\n"
+            "Output must strictly validate against the provided schema."
+        ),
+        output_type=Plan,
+    )
 
 def make_architect_agent() -> Agent:
     return Agent(

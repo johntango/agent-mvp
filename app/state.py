@@ -8,13 +8,13 @@ cfg = load_config()
 DB_PATH = Path(cfg["STATE_DB"])
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-def _conn() -> sqlite3.Connection:
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    c.execute("""
-    PRAGMA journal_mode=WAL;
-    """)
-    # schema
+
+def now() -> float: return time.time()
+
+# app/state.py  (add/extend)
+# ...existing imports and DB_PATH/_conn()...
+
+def _ensure_schema(c: sqlite3.Connection) -> None:
     c.executescript("""
     CREATE TABLE IF NOT EXISTS tasks(
       task_id TEXT PRIMARY KEY,
@@ -22,7 +22,6 @@ def _conn() -> sqlite3.Connection:
       created_at REAL NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending'
     );
-
     CREATE TABLE IF NOT EXISTS steps(
       task_id TEXT NOT NULL,
       step_id TEXT NOT NULL,
@@ -35,7 +34,6 @@ def _conn() -> sqlite3.Connection:
       error TEXT,
       PRIMARY KEY(task_id, step_id)
     );
-
     CREATE TABLE IF NOT EXISTS artifacts(
       task_id TEXT NOT NULL,
       step_id TEXT NOT NULL,
@@ -47,10 +45,77 @@ def _conn() -> sqlite3.Connection:
       created_at REAL NOT NULL,
       PRIMARY KEY(task_id, step_id, attempt, name)
     );
+    -- NEW: store the whole plan (for audit/debug)
+    CREATE TABLE IF NOT EXISTS plans(
+      task_id TEXT PRIMARY KEY,
+      plan_json TEXT NOT NULL
+    );
+    -- NEW: step dependencies (row per dependency)
+    CREATE TABLE IF NOT EXISTS step_deps(
+      task_id TEXT NOT NULL,
+      step_id TEXT NOT NULL,
+      depends_on TEXT NOT NULL,
+      PRIMARY KEY(task_id, step_id, depends_on)
+    );
     """)
+
+def _conn() -> sqlite3.Connection:
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL;")
+    _ensure_schema(c)
     return c
 
-def now() -> float: return time.time()
+def save_plan(task_id: str, plan_json: str) -> None:
+    c = _conn()
+    c.execute("INSERT OR REPLACE INTO plans(task_id, plan_json) VALUES(?,?)", (task_id, plan_json))
+    c.commit(); c.close()
+
+def upsert_step(task_id: str, step_id: str) -> None:
+    c = _conn()
+    c.execute("""INSERT INTO steps(task_id, step_id, status, attempt)
+                 VALUES(?,?, 'queued', 0)
+                 ON CONFLICT(task_id,step_id) DO UPDATE SET status='queued'""",
+              (task_id, step_id))
+    c.commit(); c.close()
+
+def add_dependency(task_id: str, step_id: str, depends_on: str) -> None:
+    c = _conn()
+    c.execute("""INSERT OR IGNORE INTO step_deps(task_id, step_id, depends_on) VALUES(?,?,?)""",
+              (task_id, step_id, depends_on))
+    c.commit(); c.close()
+
+def deps_satisfied(task_id: str, step_id: str) -> bool:
+    c = _conn()
+    row = c.execute("""
+      SELECT COUNT(*) AS unmet
+      FROM step_deps d
+      LEFT JOIN steps s2
+        ON s2.task_id = d.task_id AND s2.step_id = d.depends_on
+      WHERE d.task_id=? AND d.step_id=? AND (s2.status IS NULL OR s2.status != 'ok')
+    """, (task_id, step_id)).fetchone()
+    c.close()
+    return (row["unmet"] == 0)
+
+def list_ready_steps(task_id: str) -> list[str]:
+    """Queued steps whose dependencies are all ok."""
+    c = _conn()
+    rows = c.execute("""
+      SELECT s.step_id
+      FROM steps s
+      WHERE s.task_id=? AND s.status='queued'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM step_deps d
+        LEFT JOIN steps s2
+          ON s2.task_id=d.task_id AND s2.step_id=d.depends_on
+        WHERE d.task_id=s.task_id AND d.step_id=s.step_id
+          AND (s2.status IS NULL OR s2.status!='ok')
+      )
+    """, (task_id,)).fetchall()
+    c.close()
+    return [r["step_id"] for r in rows]
+
 
 def init_task(task_id: str, prompt: str) -> None:
     c = _conn()

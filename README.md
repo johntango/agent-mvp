@@ -12,6 +12,9 @@ The name “Architect” reflects the agent’s persona for the design phase. Th
 
 Terminology note:
 We use “agent” in two senses. LLM agents (Designer/Implementer/Tester/Reviewer) do the creative work. Faust “agents” are streaming functions. The orchestrator is a Faust agent (stream processor) that coordinates steps; it is not an LLM agent.
+
+Planning & Steps
+The planner (LLM) converts the initial prompt into a validated plan (a DAG) of step IDs (e.g., design@v1, implement@v1, test@v1, review@v1). The plan is persisted in SQLite (plans, steps, step_deps). The orchestrator promotes any queued steps whose dependencies are satisfied. This separates decision-making (LLM) from execution (Faust + SQLite), improving reliability and auditability.
 ----
 
 # 0) Start Redpanda (as you already do)
