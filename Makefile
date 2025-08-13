@@ -21,3 +21,6 @@ web:
 # Enqueue a new task (aiokafka producer)
 send:
 	$(PYTHON) scripts/enqueue_async.py --text "$(TEXT)"
+
+publish:
+	$(PYTHON) scripts/publish_task.py --task-id "$(TID)"

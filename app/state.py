@@ -210,3 +210,41 @@ def record_artifact(task_id: str, step_id: str, attempt: int, name: str, uri: st
                  VALUES(?,?,?,?,?,?,?,?)""",
               (task_id, step_id, attempt, name, uri, sha, size_bytes, now()))
     c.commit(); c.close()
+
+# app/state.py  (additions to publish to GitHub)
+
+def _ensure_schema(c: sqlite3.Connection) -> None:
+    c.executescript("""
+    -- existing tables...
+    CREATE TABLE IF NOT EXISTS task_meta(
+      task_id TEXT NOT NULL,
+      k TEXT NOT NULL,
+      v TEXT NOT NULL,
+      PRIMARY KEY(task_id, k)
+    );
+    """)
+
+def set_meta(task_id: str, k: str, v: str) -> None:
+    c = _conn()
+    c.execute("INSERT INTO task_meta(task_id,k,v) VALUES(?,?,?) "
+              "ON CONFLICT(task_id,k) DO UPDATE SET v=excluded.v",
+              (task_id, k, v))
+    c.commit(); c.close()
+
+def get_meta(task_id: str, k: str, default: str = "") -> str:
+    c = _conn()
+    row = c.execute("SELECT v FROM task_meta WHERE task_id=? AND k=?", (task_id, k)).fetchone()
+    c.close()
+    return row["v"] if row else default
+
+def task_all_ok(task_id: str) -> bool:
+    c = _conn()
+    row = c.execute("SELECT COUNT(*) AS pending FROM steps WHERE task_id=? AND status!='ok'", (task_id,)).fetchone()
+    c.close()
+    return (row["pending"] == 0)
+
+def any_steps_remaining(task_id: str) -> bool:
+    c = _conn()
+    row = c.execute("SELECT COUNT(*) AS n FROM steps WHERE task_id=? AND status IN ('queued','running','retry')", (task_id,)).fetchone()
+    c.close()
+    return (row["n"] > 0)
