@@ -28,7 +28,8 @@ def _next_step(step_id: str) -> str | None:
         return _CHAIN[i+1] if i+1 < len(_CHAIN) else None
     except ValueError:
         return None
-
+        
+# This is a Faust API agent that orchestrates a workflow
 @app.agent(step_results)
 async def orchestrator(stream):
     async for res in stream:
