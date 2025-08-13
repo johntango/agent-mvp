@@ -73,6 +73,7 @@ async def orchestrator(stream):
 
 async def _maybe_publish(tid: str) -> None:
     # Don’t publish twice
+    print("Checking if we should publish...")
     if get_meta(tid, "published", "0") == "1":
         return
     # Only publish when every step is ok and no queued/running remain
@@ -84,6 +85,7 @@ async def _maybe_publish(tid: str) -> None:
         tests  = json.loads((data_dir / "test@v1.json").read_text(encoding="utf-8"))
 
         try:
+            print(f"Preparing PR for task {tid} with calling prepare_repo_and_pr")
             pr_info = prepare_repo_and_pr(tid, design, impl, tests)
             pr_url = pr_info.get("pr_url")
             _append_report({"task_id": tid, "status": "pr_opened", "summary": f"PR: {pr_url}"})

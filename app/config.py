@@ -6,7 +6,6 @@ from pathlib import Path
 
 def load_config():
     GITHUB_TOKEN = os.environ["CODE_GEN_KEY"]
-    print("ZZZZZZZZZZZ ", GITHUB_TOKEN)
     return {
         "GITHUB_TOKEN": GITHUB_TOKEN,
         "DATA_DIR": os.getenv("DATA_DIR", "./data"),

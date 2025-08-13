@@ -24,3 +24,6 @@ send:
 
 publish:
 	$(PYTHON) scripts/publish_task.py --task-id "$(TID)"
+
+ci_monitor:
+	WEB_PORT=6069 $(PYTHON) -m app.ci_monitor_service worker -l info

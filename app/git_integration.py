@@ -2,6 +2,7 @@ import os, subprocess, shlex
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import requests  # pip install requests
+from app.config import load_config
 
 def _run(cmd: str, cwd: Path, env: Optional[dict] = None) -> Tuple[int, str, str]:
     e = os.environ.copy()
@@ -11,6 +12,10 @@ def _run(cmd: str, cwd: Path, env: Optional[dict] = None) -> Tuple[int, str, str
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     out, err = p.communicate()
     return p.returncode, out.strip(), err.strip()
+
+def _ensure_ok(code: int, out: str, err: str, ctx: str) -> None:
+    if code != 0:
+        raise RuntimeError(f"{ctx} failed: {err or out}")
 
 def _gh_api(method: str, endpoint: str, token: str, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     headers = {
@@ -35,19 +40,50 @@ def ensure_repo(target_path: Path, repo_url: Optional[str]) -> None:
                 raise RuntimeError(f"git init failed: {err or out}")
 
 def ensure_remote(target_path: Path, repo_https_url_with_auth: str) -> None:
-    code, out, _ = _run("git remote -v", cwd=target_path)
-    if "origin" not in out:
+    code, out, err = _run("git remote get-url origin", cwd=target_path)
+    if code != 0:
         code, out, err = _run(f"git remote add origin {shlex.quote(repo_https_url_with_auth)}", cwd=target_path)
-        if code != 0:
-            raise RuntimeError(f"git remote add failed: {err or out}")
+        _ensure_ok(code, out, err, "git remote add")
+    else:
+        if out.strip() != repo_https_url_with_auth:
+            code, out, err = _run(f"git remote set-url origin {shlex.quote(repo_https_url_with_auth)}", cwd=target_path)
+            _ensure_ok(code, out, err, "git remote set-url")
 
 def checkout_base(target_path: Path, base_branch: str) -> None:
-    _run("git fetch origin --prune", cwd=target_path)
-    _run(f"git checkout -B {shlex.quote(base_branch)} origin/{base_branch} || git checkout -B {shlex.quote(base_branch)}", cwd=target_path)
+    code, out, err = _run("git fetch origin --prune", cwd=target_path)
+    _ensure_ok(code, out, err, "git fetch")
+
+    # Does origin/base exist?
+    code, out, err = _run(f"git rev-parse --verify origin/{shlex.quote(base_branch)}", cwd=target_path)
+    if code == 0:
+        # Create/reset local base from remote
+        code, out, err = _run(f"git checkout -B {shlex.quote(base_branch)} origin/{shlex.quote(base_branch)}", cwd=target_path)
+        _ensure_ok(code, out, err, "git checkout base from origin")
+    else:
+        # Fall back to local-only (new repo case)
+        code, out, err = _run(f"git checkout -B {shlex.quote(base_branch)}", cwd=target_path)
+        _ensure_ok(code, out, err, "git checkout local base")
+
+
 
 def checkout_feature(target_path: Path, branch: str, base: str) -> None:
-    _run("git fetch origin --prune", cwd=target_path)
-    _run(f"git checkout -B {shlex.quote(branch)} origin/{base} || git checkout -B {shlex.quote(branch)} {shlex.quote(base)}", cwd=target_path)
+    code, out, err = _run("git fetch origin --prune", cwd=target_path)
+    _ensure_ok(code, out, err, "git fetch")
+
+    # Prefer creating from origin/base if present
+    code, out, err = _run(f"git rev-parse --verify origin/{shlex.quote(base)}", cwd=target_path)
+    if code == 0:
+        code, out, err = _run(f"git checkout -B {shlex.quote(branch)} origin/{shlex.quote(base)}", cwd=target_path)
+        _ensure_ok(code, out, err, "git checkout feature from origin/base")
+    else:
+        code, out, err = _run(f"git checkout -B {shlex.quote(branch)} {shlex.quote(base)}", cwd=target_path)
+        _ensure_ok(code, out, err, "git checkout feature from local base")
+
+    # Sanity check: are we on the branch?
+    code, out, err = _run("git rev-parse --abbrev-ref HEAD", cwd=target_path)
+    _ensure_ok(code, out, err, "git rev-parse HEAD")
+    if out.strip() != branch:
+        raise RuntimeError(f"Not on expected branch: got '{out.strip()}', wanted '{branch}'")
 
 def write_files(target_path: Path, files: List[Dict[str, str]]) -> None:
     for f in files:
@@ -55,20 +91,30 @@ def write_files(target_path: Path, files: List[Dict[str, str]]) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(f["content"], encoding="utf-8")
 
+
 def commit_all(target_path: Path, message: str, author: Optional[str] = None) -> None:
-    _run("git add -A", cwd=target_path)
+    code, out, err = _run("git add -A", cwd=target_path)
+    _ensure_ok(code, out, err, "git add")
+
     cmd = f'git commit -m {shlex.quote(message)}'
     if author:
         cmd += f' --author {shlex.quote(author)}'
     code, out, err = _run(cmd, cwd=target_path)
-    if code != 0 and "nothing to commit" not in (out + err).lower():
+
+    # If nothing to commit, raise early so you know why there’s no ref to push
+    nothing = "nothing to commit" in (out + err).lower()
+    if code != 0 and not nothing:
         raise RuntimeError(f"git commit failed: {err or out}")
+    if nothing:
+        raise RuntimeError("No changes to commit; nothing to push. Did you write any files?")
+
 
 def push_branch(target_path: Path, branch: str) -> None:
-    code, out, err = _run(f"git push -u origin {shlex.quote(branch)}", cwd=target_path)
+    # Push the current HEAD to the remote branch name explicitly.
+    code, out, err = _run(f"git push -u origin HEAD:refs/heads/{shlex.quote(branch)}", cwd=target_path)
     if code != 0:
         raise RuntimeError(f"git push failed: {err or out}")
-
+    
 def open_pr(owner_repo: str, head_branch: str, base_branch: str, title: str, body: str, token: str) -> Dict[str, Any]:
     owner, repo = owner_repo.split("/", 1)
     # Try create; if exists, fetch existing
@@ -119,11 +165,16 @@ jobs:
 """, encoding="utf-8")
 
 def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, Any], tests: Dict[str, Any]) -> Dict[str, Any]:
-    owner_repo = os.environ.get("GITHUB_REPO")             # e.g. johntango/your-repo
-    token = os.environ.get("GITHUB_TOKEN")                  # PAT or fine-grained token (repo scope)
-    base = os.environ.get("GIT_BASE", "main")
-    repo_url = os.environ.get("TARGET_REPO_URL")           # optional
-    repo_path = Path(os.environ.get("TARGET_REPO_PATH", "./target_repo")).resolve()
+    cfg = load_config()  # optio
+
+    owner_repo = cfg["GITHUB_REPO"]            # e.g. johntango/your-repo
+    token = cfg["GITHUB_TOKEN"]                 # PAT or fine-grained token (repo scope)
+    base = cfg["GIT_BASE"]
+    repo_url = cfg["TARGET_REPO_URL"]         # optional
+    repo_path = Path(cfg["TARGET_REPO_PATH"]).resolve()
+
+    print(f"ZZZZ Preparing repo {owner_repo} at {repo_path} for task {task_id} for base {base}")
+
     if not owner_repo or not token:
         raise RuntimeError("GITHUB_REPO and GITHUB_TOKEN must be set")
 
@@ -140,6 +191,7 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     files: List[Dict[str, str]] = []
     files += (impl.get("files") or [])
     files += (tests.get("test_files") or [])
+    print(f"Files to write: {len(files)}")
     if not files:
         files = [{"path": f"generated/{task_id}/hello.py", "content": 'print("Hello from agent task")\n'}]
 

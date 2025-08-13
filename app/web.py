@@ -1,3 +1,4 @@
+from asyncio import events
 import app
 from flask import Flask, render_template_string, request, redirect, url_for
 import os, json, subprocess
@@ -104,7 +105,13 @@ HTML_TASKS = """
 <table class="table table-striped">
   <thead><tr><th>Task ID</th><th>Latest Status</th><th>Actions</th></tr></thead>
   <tbody>
+  <h4 class="mt-4">Integration</h4>
+      <ul>
+        <li>Pull Request: {% if pr_url %}<a href="{{ pr_url }}" target="_blank">{{ pr_url }}</a>{% else %}<span class="text-muted">—</span>{% endif %}</li>
+        <li>CI Status: {{ ci_status or "—" }}</li>
+      </ul>
   {% for t in tasks %}
+  
     <tr>
       <td><a href="{{ url_for('task_detail', task_id=t.task_id) }}"><code>{{ t.task_id }}</code></a></td>
       <td>{{ t.status }}</td>
@@ -205,6 +212,9 @@ def create_app():
       task_dir = DATA_DIR / task_id
       artifacts = {s: [] for s in ["design@v1","implement@v1","test@v1","review@v1"]}
       previews = {}
+      events = _load_reports_for_task(task_id)
+      pr_url = next((e.get("summary","").split("PR: ",1)[-1] for e in events if e.get("status")=="pr_opened"), None)
+      ci_status = next((e.get("summary") for e in events if e.get("status")=="ci_done"), None)
       if task_dir.exists():
           for p in sorted(task_dir.glob("*.json")):
               # map to step key
@@ -379,6 +389,19 @@ def _build_mermaid_for_task(task_id: str) -> str:
         lines.append(f"  class {nid} {cls};")
 
     return "\n".join(lines)
+
+def _load_reports_for_task(task_id: str, limit: int = 1000):
+    rows = []
+    if LOGFILE.exists():
+        with LOGFILE.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("task_id") == task_id:
+                    rows.append(obj)
+    return rows[-limit:]
 
 if __name__ == "__main__":
     create_app().run(host="0.0.0.0", port=5000, debug=True)

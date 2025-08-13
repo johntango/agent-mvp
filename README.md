@@ -34,7 +34,8 @@ make planner
 make worker
 make orchestrator
 make web    # open http://localhost:5000
-
+make publish 
+	$(PYTHON) scripts/publish_task.py --task-id "$(TID)"
 # 2) Enqueue a task
 make send TEXT="Write a tiny Python program that prints 'Hello Earthling'"
 
