@@ -193,7 +193,7 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     files += (tests.get("test_files") or [])
     print(f"Files to write: {len(files)}")
     if not files:
-        files = [{"path": f"generated/{task_id}/hello.py", "content": 'print("Hello from agent task")\n'}]
+        files = prepare_files_from_local(task_id)
 
     write_files(repo_path, files)
     ensure_actions_workflow(repo_path)
@@ -210,3 +210,46 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
         "head_sha": head_sha,
         "head_ref": branch,
     }
+
+def prepare_files_from_local(task_id: str) -> List[Dict[str, str]]:
+    """
+    Read all files under autoCodeGen/generated/<task_id> and return them
+    as a list of {"path": <relative_path>, "content": <text>} dicts
+    suitable for passing to write_files.
+    """
+    base_dir = Path("autoGenCode") / "generated" / task_id
+    file_entries: List[Dict[str, str]] = []
+
+    if not base_dir.exists():
+        raise FileNotFoundError(f"Local path {base_dir} does not exist")
+
+    for file_path in base_dir.rglob("*"):
+        if file_path.is_file():
+            rel_path = file_path.relative_to(base_dir)  # relative to <task_id>
+            with open(file_path, "r", encoding="utf-8") as f:
+                contents = f.read()
+            file_entries.append({
+                # store under generated/<taskId>/… in the repo
+                "path": str(Path("generated") / task_id / rel_path),
+                "content": contents,
+            })
+
+    return file_entries
+
+def prepare(self, params: Dict) -> None:
+    # … any setup you need …
+    task_id = params["task_id"]
+    repo_path = params["repo_path"]
+
+    # load any locally generated files instead of creating hello.py
+    files = prepare_files_from_local(task_id)
+
+    # If you still want a dummy file when no files found:
+    if not files:
+        files = [{
+            "path": f"generated/{task_id}/hello.py",
+            "content": 'print("Hello from agent")\n',
+        }]
+        write_files(Path(repo_path), files)
+
+    
