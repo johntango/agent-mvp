@@ -5,6 +5,10 @@ link to https://docs.google.com/document/d/1q3a472cCyPQLtxxhxXWPkCHUrTHQ31YcaKtW
 A minimal yet extensible multi-agent system that accepts natural-language software tasks, executes a four-stage pipeline (Design → Implement → Test → Review), persists artifacts, and exposes a small Bootstrap UI for enqueuing tasks, inspecting reports, and replaying individual agent steps.
 
 This README documents architecture, data flow, configuration, operation, and troubleshooting.
+
+Note on naming:
+The first pipeline step is internally called design@v1 but is implemented by the make_architect_agent() factory function.
+The name “Architect” reflects the agent’s persona for the design phase. This mismatch is intentional and does not affect execution.
 ----
 
 # 0) Start Redpanda (as you already do)
