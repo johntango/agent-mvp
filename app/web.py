@@ -1,8 +1,12 @@
+import app
 from flask import Flask, render_template_string, request, redirect, url_for
 import os, json, subprocess
 from pathlib import Path
 from app.config import load_config
 from jinja2 import DictLoader
+import json, html
+from pathlib import Path
+from app.state import fetch_steps, fetch_step_deps
 
 cfg = load_config()
 DATA_DIR = Path(cfg.get("DATA_DIR","./data"))
@@ -96,6 +100,7 @@ HTML_TASKS = """
 {% extends "base.html" %}
 {% block body %}
 <h1>Tasks</h1>
+
 <table class="table table-striped">
   <thead><tr><th>Task ID</th><th>Latest Status</th><th>Actions</th></tr></thead>
   <tbody>
@@ -106,7 +111,14 @@ HTML_TASKS = """
       <td>
         <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('task_detail', task_id=t.task_id) }}">Open</a>
       </td>
+      <td>
+        <p>
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('task_dag', task_id=t.task_id) }}">View DAG</a>
+        </p>
+      </td>
     </tr>
+   
+    
   {% endfor %}
   </tbody>
 </table>
@@ -212,16 +224,86 @@ def create_app():
 
   @app.route("/replay", methods=["POST"])
   def replay():
-      task_id = request.form.get("task_id", "").strip()
-      step_id = request.form.get("step_id", "").strip()
-      reason  = request.form.get("reason", "").strip()
-      if task_id and step_id:
-          subprocess.Popen(["python", "scripts/replay_async.py", "--task-id", task_id, "--step", step_id, "--reason", reason])
-      return redirect(url_for("task_detail", task_id=task_id))
+    task_id = request.form.get("task_id", "").strip()
+    step_id = request.form.get("step_id", "").strip()
+    reason  = request.form.get("reason", "").strip()
+    if task_id and step_id:
+        subprocess.Popen(["python", "scripts/replay_async.py", "--task-id", task_id, "--step", step_id, "--reason", reason])
+    return redirect(url_for("task_detail", task_id=task_id))
 
+  @app.route("/api/tasks/<task_id>/dag.json")
+  def dag_json(task_id: str):
+      steps = fetch_steps(task_id)
+      deps  = fetch_step_deps(task_id)
+      return {
+          "task_id": task_id,
+          "nodes": [{"id": s["step_id"], "status": s["status"], "attempt": s["attempt"]} for s in steps],
+          "edges": [{"from": a, "to": b} for (a, b) in deps],
+      }
     # register base template
 
+  @app.route("/tasks/<task_id>/dag")
+  def task_dag(task_id: str):
+        cfg = load_config()
+        data_dir = Path(cfg["DATA_DIR"])
+        # Build Mermaid spec
+        mermaid_src = _build_mermaid_for_task(task_id)
+
+        # Simple Bootstrap page with Mermaid
+        html_page = """
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <title>DAG · {{ task_id }}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <!-- Bootstrap (unstyled defaults fine for Codespaces) -->
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <!-- Mermaid -->
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+        <script>
+          mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose' });
+        </script>
+        <style>
+          .mermaid { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 0.75rem; }
+          .legend-badge { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+        </style>
+      </head>
+      <body class="container py-3">
+        <h1 class="h4 mb-3">Task DAG <small class="text-muted">({{ task_id }})</small></h1>
+
+        <div class="mb-2">
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('task_detail', task_id=task_id) }}">← Back to task</a>
+          <a class="btn btn-sm btn-outline-primary" href="{{ url_for('task_dag', task_id=task_id) }}">Refresh</a>
+        </div>
+
+        <div class="mb-3">
+          <span class="legend-badge" style="background:#eef6ff;border:1px solid #1e90ff"></span> queued
+          <span class="legend-badge" style="background:#fff8e1;border:1px solid #f0ad4e"></span> running
+          <span class="legend-badge" style="background:#e6ffed;border:1px solid #28a745"></span> ok
+          <span class="legend-badge" style="background:#ffeef0;border:1px solid #d73a49"></span> fail
+          <span class="legend-badge" style="background:#fff5f5;border:1px solid #dc3545"></span> retry
+        </div>
+
+        <div class="mermaid">
+      {{ mermaid_src }}
+        </div>
+
+        <p class="text-muted mt-3 mb-0">
+          Edges reflect <code>depends_on</code>; nodes reflect current status from SQLite.
+        </p>
+      </body>
+      </html>
+      """
+        return render_template_string(html_page,
+                                    task_id=task_id,
+                                    mermaid_src=mermaid_src)
+
+
+
   return app
+
+
 
 def _load_reports(limit: int = 200):
     rows = []
@@ -236,6 +318,67 @@ def _load_reports(limit: int = 200):
     # newest first
     rows.reverse()
     return rows
+
+
+def _safe_id(s: str) -> str:
+    # Mermaid node ids should be simple; keep label separately
+    return (
+        s.replace(" ", "_")
+         .replace("@", "_at_")
+         .replace("/", "_")
+         .replace("-", "_")
+         .replace(".", "_")
+    )
+
+def _status_class(status: str) -> str:
+    m = {
+        "queued": "queued",
+        "running": "running",
+        "ok": "ok",
+        "fail": "fail",
+        "retry": "retry",
+    }
+    return m.get((status or "").lower(), "queued")
+
+def _build_mermaid_for_task(task_id: str) -> str:
+    """Returns a Mermaid flowchart string using steps + deps from SQLite."""
+    steps = fetch_steps(task_id)
+    deps  = fetch_step_deps(task_id)
+
+    if not steps:
+        return "flowchart LR\n  note[\"No steps registered for this task\"]"
+
+    lines = ["flowchart LR"]
+
+    # 1) Put classDef BEFORE any nodes (ensures consistent application)
+    lines.extend([
+        "  classDef queued fill:#eef6ff,stroke:#1e90ff,color:#0b132b,stroke-width:1px;",
+        "  classDef running fill:#fff8e1,stroke:#f0ad4e,color:#4a3b00,stroke-width:1px;",
+        "  classDef ok fill:#e6ffed,stroke:#28a745,color:#0b3d0b,stroke-width:1px;",
+        "  classDef fail fill:#ffeef0,stroke:#d73a49,color:#5a0b14,stroke-width:1px;",
+        "  classDef retry fill:#fff5f5,stroke:#dc3545,color:#5a0b14,stroke-width:1px;",
+    ])
+
+    # 2) Declare nodes (no class yet)
+    node_ids = []
+    for s in steps:
+        sid = s["step_id"]
+        nid = _safe_id(sid)
+        status = (s.get("status") or "queued").lower()
+        label = f"{sid}\\nstatus: {status}"
+        lines.append(f'  {nid}["{label}"]')
+        node_ids.append((nid, status))
+
+    # 3) Edges
+    for (dep, step) in deps:
+        lines.append(f"  {_safe_id(dep)} --> {_safe_id(step)}")
+
+    # 4) Assign classes explicitly (more compatible than :::)
+    for nid, status in node_ids:
+        cls = _status_class(status)
+        lines.append(f"  class {nid} {cls};")
+
+    return "\n".join(lines)
 
 if __name__ == "__main__":
     create_app().run(host="0.0.0.0", port=5000, debug=True)

@@ -2,7 +2,7 @@
 from typing import List
 from pydantic import BaseModel
 from agents import Agent, Runner
-from app.plan_models import Plan, STEP_CATALOG
+from app.plan_model import Plan, STEP_CATALOG
 
 class Design(BaseModel):
     design_summary: str

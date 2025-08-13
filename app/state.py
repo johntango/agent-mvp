@@ -1,7 +1,7 @@
 # app/state.py
 import sqlite3, time, json, os, hashlib
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import List,Optional, Tuple, Dict, Any
 from app.config import load_config
 
 cfg = load_config()
@@ -13,6 +13,28 @@ def now() -> float: return time.time()
 
 # app/state.py  (add/extend)
 # ...existing imports and DB_PATH/_conn()...
+# app/state.py (additions)
+
+
+
+def fetch_steps(task_id: str) -> List[Dict]:
+    c = _conn()
+    rows = c.execute(
+        "SELECT step_id, status, attempt FROM steps WHERE task_id=? ORDER BY step_id ASC",
+        (task_id,),
+    ).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
+
+def fetch_step_deps(task_id: str) -> List[Tuple[str, str]]:
+    """Returns list of (depends_on, step_id) edges."""
+    c = _conn()
+    rows = c.execute(
+        "SELECT depends_on, step_id FROM step_deps WHERE task_id=?",
+        (task_id,),
+    ).fetchall()
+    c.close()
+    return [(r["depends_on"], r["step_id"]) for r in rows]
 
 def _ensure_schema(c: sqlite3.Connection) -> None:
     c.executescript("""

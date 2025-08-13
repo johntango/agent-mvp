@@ -4,7 +4,7 @@ from pathlib import Path
 from app.bus import app, task_topic, step_requests, make_report, report_topic
 from app.config import load_config
 from app.state import init_task, save_plan, upsert_step, add_dependency, list_ready_steps
-from app.plan_models import Plan, validate_plan, STEP_CATALOG
+from app.plan_model import Plan, validate_plan, STEP_CATALOG
 from app.agents import make_planner_agent
 from agents import Runner  # your OpenAI Agents SDK runner
 
