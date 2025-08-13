@@ -9,6 +9,9 @@ This README documents architecture, data flow, configuration, operation, and tro
 Note on naming:
 The first pipeline step is internally called design@v1 but is implemented by the make_architect_agent() factory function.
 The name “Architect” reflects the agent’s persona for the design phase. This mismatch is intentional and does not affect execution.
+
+Terminology note:
+We use “agent” in two senses. LLM agents (Designer/Implementer/Tester/Reviewer) do the creative work. Faust “agents” are streaming functions. The orchestrator is a Faust agent (stream processor) that coordinates steps; it is not an LLM agent.
 ----
 
 # 0) Start Redpanda (as you already do)
