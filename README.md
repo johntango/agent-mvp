@@ -36,6 +36,14 @@ sqlite3 ./data/state.sqlite '.schema' '.tables'
 ---
 
 ## 1. Architecture
+| Topic (env var)                             | Purpose                                           | Producers (write)                                                                               | Consumers (subscribe)                                                |
+| ------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **`agent_tasks`** (`TASK_TOPIC`)            | New tasks & replay commands                       | `scripts/enqueue_async.py` (UI + CLI), `scripts/replay_async.py`                                | **Planner** (`app/planner_service.py`)                               |
+| **`step_requests`** (`STEP_REQUESTS_TOPIC`) | Work items for a specific pipeline step           | **Planner** (initial `design@v1`), **Orchestrator** (next steps, retries)                       | **Worker** (`app/worker.py`)                                         |
+| **`step_results`** (`STEP_RESULTS_TOPIC`)   | Results from a single step (ok/fail)              | **Worker**                                                                                      | **Orchestrator** (`app/orchestrator_service.py`)                     |
+| **`agent_reports`** (`REPORT_TOPIC`)        | Human-friendly status events                      | **Planner** (`received`), **Orchestrator** (`done`, `error`, `pr`, `ci`), **CI Monitor** (`ci`) | (none in code today; the **UI** reads `./data/reports.jsonl` mirror) |
+| **`ci_watch`** (`CI_WATCH_TOPIC`)           | Ask CI monitor to watch a PR/branch               | **Orchestrator** (after opening PR)                                                             | **CI Monitor** (`app/ci_monitor_service.py`)                         |
+| **`agent_dlq`** (`DLQ_TOPIC`)               | Dead-letter queue for steps that exceeded retries | **Orchestrator**                                                                                | (none yet — future ops/alerting consumer)                            |
 
 ### Components
 
