@@ -11,7 +11,7 @@ from app.state import fetch_steps, fetch_step_deps
 
 cfg = load_config()
 DATA_DIR = cfg.get("APP_DATA_DIR")
-LOGFILE = Path(DATA_DIR, "reports.jsonl")
+LOGFILE = Path(DATA_DIR) / "reports.jsonl"
 
 HTML_BASE = """
 <!doctype html>
@@ -208,7 +208,7 @@ def create_app():
 
   @app.route("/task/<task_id>")
   def task_detail(task_id: str):
-      task_dir = DATA_DIR / task_id
+      task_dir = Path(DATA_DIR) / task_id
       artifacts = {s: [] for s in ["design@v1","implement@v1","test@v1","review@v1"]}
       previews = {}
       events = _load_reports_for_task(task_id)
