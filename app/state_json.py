@@ -1,9 +1,10 @@
 import json, os, time
 from pathlib import Path
 from typing import Any, Dict
+from app.config import load_config
 
 def _data_dir() -> Path:
-    d = Path(os.environ.get("DATA_DIR", "./data"))
+    d = load_config().get("APP_DATA_DIR", "./data")
     d.mkdir(parents=True, exist_ok=True)
     return d
 

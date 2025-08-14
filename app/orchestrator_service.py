@@ -15,7 +15,7 @@ _MAX = cfg["MAX_ATTEMPTS"]
 
 
 cfg = load_config()
-LOGFILE = Path(cfg["DATA_DIR"]) / "reports.jsonl"
+LOGFILE = Path(cfg["APP_DATA_DIR"]) / "reports.jsonl"
 def _append_report(obj: dict) -> None:
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     with LOGFILE.open("a", encoding="utf-8") as f:
@@ -79,7 +79,7 @@ async def _maybe_publish(tid: str) -> None:
     # Only publish when every step is ok and no queued/running remain
     if task_all_ok(tid) and not any_steps_remaining(tid):
         # Load artifacts and open PR
-        data_dir = Path(cfg["DATA_DIR"]) / tid
+        data_dir = Path(cfg["APP_DATA_DIR"]) / tid
         design = json.loads((data_dir / "design@v1.json").read_text(encoding="utf-8"))
         impl   = json.loads((data_dir / "implement@v1.json").read_text(encoding="utf-8"))
         tests  = json.loads((data_dir / "test@v1.json").read_text(encoding="utf-8"))

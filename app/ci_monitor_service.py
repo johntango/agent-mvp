@@ -6,7 +6,7 @@ from app.config import load_config
 
 cfg = load_config()
 LOG = logging.getLogger("agent-mvp.ci-monitor")
-LOGFILE = Path(cfg["DATA_DIR"]) / "reports.jsonl"
+LOGFILE = Path(cfg["APP_DATA_DIR"]) / "reports.jsonl"
 LOGFILE.parent.mkdir(parents=True, exist_ok=True)
 
 def _append_report(obj: Dict[str, Any]) -> None:

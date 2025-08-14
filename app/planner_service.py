@@ -9,7 +9,7 @@ from app.agents import make_planner_agent
 from agents import Runner  # your OpenAI Agents SDK runner
 
 cfg = load_config()
-DATA_DIR = Path(cfg["DATA_DIR"]); DATA_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR = Path(cfg["APP_DATA_DIR"]); DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGFILE = DATA_DIR / "reports.jsonl"
 logger = logging.getLogger("agent-mvp.planner")
 

@@ -10,9 +10,8 @@ from pathlib import Path
 from app.state import fetch_steps, fetch_step_deps
 
 cfg = load_config()
-DATA_DIR = Path(cfg.get("DATA_DIR","./data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOGFILE = DATA_DIR / "reports.jsonl"
+DATA_DIR = cfg.get("APP_DATA_DIR")
+LOGFILE = Path(DATA_DIR, "reports.jsonl")
 
 HTML_BASE = """
 <!doctype html>

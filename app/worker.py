@@ -13,13 +13,13 @@ from app.config import load_config
 from app.state import claim_step, finish_step, record_artifact, now
 
 cfg = load_config()
-DATA_DIR = Path(cfg["DATA_DIR"]); DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOGFILE = DATA_DIR / "reports.jsonl"; LOGFILE.touch(exist_ok=True)
+DATA_DIR = Path(cfg["APP_DATA_DIR"]); DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOGFILE = Path(DATA_DIR) / "reports.jsonl"; LOGFILE.touch(exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("agent-mvp.worker")
 logger.info("Worker starting; brokers=%s data_dir=%s step_requests=%s",
-            cfg["REDPANDA_BROKERS"], cfg["DATA_DIR"], cfg["STEP_REQUESTS_TOPIC"])
+            cfg["REDPANDA_BROKERS"], cfg["APP_DATA_DIR"], cfg["STEP_REQUESTS_TOPIC"])
 
 def _read_json(path: Path):
     try:

@@ -6,6 +6,10 @@ A minimal yet extensible multi-agent system that accepts natural-language softwa
 
 This README documents architecture, data flow, configuration, operation, and troubleshooting.
 
+Our code is refered to as Generator Code. The code it generates is the Target Code.  Within our "local" CodeSpace directory with create a Clone of the Target Github Repo (autoCodeGen) 
+The Generator Code creates code under ./data/<TaskID>. We take the present latest <TaskID> files and move them into autoCodeGen and do a git add .  and a git commit and finally a git push 
+
+
 Note on naming:
 The first pipeline step is internally called design@v1 but is implemented by the make_architect_agent() factory function.
 The name “Architect” reflects the agent’s persona for the design phase. This mismatch is intentional and does not affect execution.
