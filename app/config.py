@@ -1,101 +1,88 @@
 # app/config.py
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
-def _abs(p: str | Path) -> Path:
-    """Resolve an absolute path (expands ~, makes absolute, resolves symlinks)."""
-    return Path(p).expanduser().resolve()
+def _detect_workspace_root() -> Path:
+    # 1) Codespaces sets GITHUB_WORKSPACE to /workspaces/<repo>
+    gw = os.getenv("GITHUB_WORKSPACE")
+    if gw:
+        p = Path(gw).resolve()
+        if p.exists():
+            return p
 
-def load_config() -> Dict[str, Any]:
-    # --- Auth (required) -----------------------------------------------------
-    token = os.environ["CODE_GEN_KEY"]
-    if not token:
-        raise KeyError("CODE_GEN_KEY is required in the environment")
+    # 2) Allow override
+    ow = os.getenv("LOCAL_WORKSPACE_ROOT")
+    if ow:
+        p = Path(ow).resolve()
+        if p.exists():
+            return p
 
-    # --- GITHUB (remote) -----------------------------------------------------
-    github_repo = os.getenv("GITHUB_REPO", "johntango/autoGenCode")  # owner/repo
-    github_base = os.getenv("GIT_BASE", "main")
-    github_repo_url = os.getenv("TARGET_REPO_URL", f"https://github.com/{github_repo}.git")
+    # 3) Infer from this file’s location by looking for repo markers
+    here = Path(__file__).resolve()
+    for cand in [*here.parents]:
+        if (cand / ".git").exists() or (cand / "pyproject.toml").exists():
+            return cand
 
-    # --- GIT_LOCAL (local clone of the GitHub repo) --------------------------
-    # This directory contains the .git for the *target* repo you push to.
-    git_local_repo_path = _abs(os.getenv("GIT_LOCAL_REPO_PATH", "/workspaces/autoGenCode"))
+    # 4) Fallback to CWD
+    return Path.cwd()
 
-    # --- LOCAL (generator workspace data) ------------------------------------
-    # Where your agent writes raw, generated artifacts before they are copied into the repo.
-    local_generated_root = _abs(os.getenv("LOCAL_GENERATED_ROOT", "/workspaces/data"))
-    
-    local_generated_root.mkdir(parents=True, exist_ok=True)
-    # Application-local data (DB, logs, UI tails) lives here:
-    app_data_dir = _abs(os.getenv("APP_DATA_DIR", "/workspaces/data"))
+def load_config() -> Dict:
+    token = os.environ["CODE_GEN_KEY"]  # required
 
-    # Inside-repo destination prefix for generated files (repo-relative, NOT absolute).
-    # Example: "generated" → files land at <GIT_LOCAL>/<generated>/<taskId>/...
-    repo_generated_dir = os.getenv("REPO_GENERATED_DIR", "data").strip()
-    if Path(repo_generated_dir).is_absolute():
-        raise ValueError("REPO_GENERATED_DIR must be a relative path inside the repo (e.g., 'data')")
+    WORKSPACE_ROOT = _detect_workspace_root()
 
-    # --- Derived files/paths --------------------------------------------------
-    reports_path = _abs(os.getenv("REPORTS_PATH", app_data_dir / "reports.jsonl"))
-    state_db = _abs(os.getenv("STATE_DB", app_data_dir / "state.sqlite3"))
+    # Keep backward compatibility: generated defaults live under <workspace>/data
+    APP_DATA_DIR = Path(os.getenv("APP_DATA_DIR", WORKSPACE_ROOT / "data")).resolve()
+    LOCAL_GENERATED_ROOT = Path(os.getenv("LOCAL_GENERATED_ROOT", str(APP_DATA_DIR))).resolve()
+    LOCAL_STORY_ROOT = Path(os.getenv("LOCAL_STORY_ROOT", WORKSPACE_ROOT / "stories")).resolve()
 
-    # Ensure directories exist
-    git_local_repo_path.mkdir(parents=True, exist_ok=True)
-    local_generated_root.mkdir(parents=True, exist_ok=True)
-    app_data_dir.mkdir(parents=True, exist_ok=True)
-    reports_path.parent.mkdir(parents=True, exist_ok=True)
-    state_db.parent.mkdir(parents=True, exist_ok=True)
+    GIT_LOCAL_REPO_PATH = Path(
+        os.getenv("GIT_LOCAL_REPO_PATH", WORKSPACE_ROOT / "autoGenCode")
+    ).resolve()
 
+    cfg = {
+        # Workspace
+        "WORKSPACE_ROOT": str(WORKSPACE_ROOT),
 
-    # --- Streaming/worker knobs ----------------------------------------------
-    redpanda = os.getenv("REDPANDA_BROKERS", "127.0.0.1:9092")
-    cfg: Dict[str, Any] = {
-        # Auth
-        "GITHUB_TOKEN": token,                 # used for API calls
-        "GITHUB_PAT": token,                   # backward-compat alias if code uses this
+        # LOCAL (non-git) paths
+        "APP_DATA_DIR": str(APP_DATA_DIR),
+        "LOCAL_GENERATED_ROOT": str(LOCAL_GENERATED_ROOT),
+        "LOCAL_STORY_ROOT": str(LOCAL_STORY_ROOT),
 
-        # GITHUB (remote identifiers)
-        "GITHUB_REPO": github_repo,            # "owner/repo"
-        "GIT_BASE": github_base,               # base branch (e.g., "main")
-        "TARGET_REPO_URL": github_repo_url,    # full HTTPS URL to the remote
+        # Files under LOCAL
+        "REPORTS_PATH": str(Path(os.getenv("REPORTS_PATH", APP_DATA_DIR / "reports.jsonl")).resolve()),
+        "STATE_DB": str(Path(os.getenv("STATE_DB", APP_DATA_DIR / "state.sqlite3")).resolve()),
 
-        # GIT_LOCAL (local clone of the target repo)
-        "GIT_LOCAL_REPO_PATH": str(git_local_repo_path),   # preferred key
-        "TARGET_REPO_PATH": str(git_local_repo_path),      # backward-compat alias
+        # GitHub / git
+        "GITHUB_REPO": os.getenv("GITHUB_REPO", "johntango/autoGenCode"),
+        "TARGET_REPO_URL": os.getenv("TARGET_REPO_URL", "https://github.com/johntango/autoGenCode.git"),
+        "GIT_LOCAL_REPO_PATH": str(GIT_LOCAL_REPO_PATH),
+        "REPO_GENERATED_DIR": os.getenv("REPO_GENERATED_DIR", "generated"),
+        "GIT_BASE": os.getenv("GIT_BASE", "main"),
 
-        # LOCAL (generator workspace)
-        "LOCAL_GENERATED_ROOT": str(local_generated_root), # preferred key
-
-        # Where generated files should live *inside the repo* (relative folder)
-        "REPO_GENERATED_DIR": repo_generated_dir,
-        "GENERATED_DIR": repo_generated_dir,               # backward-compat alias
-
-        # App-local data
-        "APP_DATA_DIR": str(app_data_dir),
-        "REPORTS_PATH": str(reports_path),
-        "STATE_DB": str(state_db),
-
-        # Messaging / worker settings
-        "REDPANDA_BROKERS": redpanda,
+        # Runtime topics / params
+        "REDPANDA_BROKERS": os.getenv("REDPANDA_BROKERS", "127.0.0.1:9092"),
         "TASK_TOPIC": os.getenv("TASK_TOPIC", "agent_tasks"),
         "REPORT_TOPIC": os.getenv("REPORT_TOPIC", "agent_reports"),
         "STEP_REQUESTS_TOPIC": os.getenv("STEP_REQUESTS_TOPIC", "step_requests"),
         "STEP_RESULTS_TOPIC": os.getenv("STEP_RESULTS_TOPIC", "step_results"),
         "DLQ_TOPIC": os.getenv("DLQ_TOPIC", "dlq"),
+        "CI_WATCH_TOPIC": os.getenv("CI_WATCH_TOPIC", "ci_watch"),
         "BACKOFF_S": os.getenv("BACKOFF_S", "5,10,30"),
         "MAX_ATTEMPTS": int(os.getenv("MAX_ATTEMPTS", "3")),
         "LEASE_TTL_S": int(os.getenv("LEASE_TTL_S", "1200")),
-        "CI_WATCH_TOPIC": os.getenv("CI_WATCH_TOPIC", "ci_watch"),
-
-        # Web/UI
         "WEB_PORT": int(os.getenv("WEB_PORT", "6066")),
-        # NEW (central library of stories, not under taskId)
-        "LOCAL_STORY_ROOT": os.getenv("LOCAL_STORY_ROOT", "/workspaces/stories"),  # ABSOLUTE
 
-
-        # Where to place a snapshot of the story inside each task folder in the repo
-        "REPO_STORY_SNAPSHOT_REL": "meta/story.json",  # repo-relative path under <REPO_GENERATED_DIR>/<taskId>/
+        # Tokens
+        "GITHUB_TOKEN": token,
+        "GITHUB_PAT": token,
     }
+
+    # Ensure directories exist
+    for key in ("APP_DATA_DIR", "LOCAL_GENERATED_ROOT", "LOCAL_STORY_ROOT", "GIT_LOCAL_REPO_PATH"):
+        Path(cfg[key]).mkdir(parents=True, exist_ok=True)
+    Path(cfg["REPORTS_PATH"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(cfg["STATE_DB"]).parent.mkdir(parents=True, exist_ok=True)
 
     return cfg
