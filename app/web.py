@@ -8,10 +8,12 @@ from jinja2 import DictLoader
 import json, html
 from pathlib import Path
 from app.state import fetch_steps, fetch_step_deps
+from app.task_wrapper import generate_and_publish_task
 
 cfg = load_config()
 DATA_DIR = cfg.get("APP_DATA_DIR")
 LOGFILE = Path(DATA_DIR) / "reports.jsonl"
+STORY_ROOT = Path(cfg["LOCAL_STORY_ROOT"])
 
 HTML_BASE = """
 <!doctype html>
@@ -172,6 +174,9 @@ HTML_TASK_DETAIL = """
 </table>
 {% endblock %}
 """
+class StoryPayload(BaseModel):
+    story_id: str
+    spec: dict
 
 def create_app():
 
@@ -188,6 +193,7 @@ def create_app():
               subprocess.Popen(["python", "scripts/enqueue_async.py", "--text", prompt])
       rows = _load_reports(limit=50)
       return render_template_string(HTML_INDEX, rows=rows)
+
 
   @app.route("/reports")
   def reports():
@@ -309,7 +315,38 @@ def create_app():
                                     mermaid_src=mermaid_src)
 
 
+  @app.get("/stories/{story_id}")
+  def get_story(story_id: str):
+      p = STORY_ROOT / f"{story_id}.json"
+      if not p.exists():
+          raise HTTPException(status_code=404, detail="story not found")
+      return json.loads(p.read_text(encoding="utf-8"))
 
+  @app.put("/stories/{story_id}")
+  def put_story(story_id: str, payload: StoryPayload | None = None):
+      """
+      Accept either raw JSON in body (spec), or StoryPayload with .spec.
+      """
+      # Accept raw dict if client PUTs the spec directly
+      if payload is None:
+          from fastapi import Request
+          # This fallback only works if you wire a Request parameter; keeping simple:
+          raise HTTPException(status_code=400, detail="use StoryPayload {story_id, spec}")
+      if payload.story_id != story_id:
+          raise HTTPException(status_code=400, detail="story_id mismatch")
+      STORY_ROOT.mkdir(parents=True, exist_ok=True)
+      (STORY_ROOT / f"{story_id}.json").write_text(json.dumps(payload.spec, indent=2), encoding="utf-8")
+      return {"ok": True}
+
+  @app.post("/tasks/{task_id}/generate/{story_id}")
+  def generate_task(task_id: str, story_id: str):
+      try:
+          info = generate_and_publish_task(task_id, story_id, design_summary=f"Story={story_id}")
+          return {"ok": True, "result": info}
+      except FileNotFoundError as e:
+          raise HTTPException(status_code=404, detail=str(e))
+      except Exception as e:
+          raise HTTPException(status_code=500, detail=str(e))
   return app
 
 

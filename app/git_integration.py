@@ -4,21 +4,34 @@ import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import fnmatch
 
 import requests  # pip install requests
-
 from app.config import load_config
 
+# ---------------------------------------------------------------------------
+# Allow-list: only code, tests, and minimal meta get committed
+# ---------------------------------------------------------------------------
+ALLOWED_GLOBS = [
+    "src/**/*.py",
+    "src/**/pyproject.toml",
+    "tests/**/*.py",
+    "meta/MANIFEST.json",
+    "meta/README.md",
+    "meta/REPORT.md",
+    "meta/story.json",   # snapshot for auditability
+    "README.md",
+]
 
-# ---------------------------
+def _match_any(rel: Path) -> bool:
+    s = str(rel).replace("\\", "/")
+    return any(fnmatch.fnmatch(s, pat) for pat in ALLOWED_GLOBS)
+
+# ---------------------------------------------------------------------------
 # Subprocess helpers
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 def _run(cmd: str, cwd: Path, env: Optional[dict] = None) -> Tuple[int, str, str]:
-    """
-    Run a shell-less subprocess with cwd/ENV, capture stdout/stderr.
-    Returns (returncode, stdout, stderr).
-    """
     e = os.environ.copy()
     if env:
         e.update(env)
@@ -33,15 +46,13 @@ def _run(cmd: str, cwd: Path, env: Optional[dict] = None) -> Tuple[int, str, str
     out, err = p.communicate()
     return p.returncode, (out or "").strip(), (err or "").strip()
 
-
 def _ensure_ok(code: int, out: str, err: str, ctx: str) -> None:
     if code != 0:
         raise RuntimeError(f"{ctx} failed: {err or out}")
 
-
-# ---------------------------
+# ---------------------------------------------------------------------------
 # GitHub API helper
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 def _gh_api(
     method: str,
@@ -59,10 +70,9 @@ def _gh_api(
     r.raise_for_status()
     return r.json() if (r.text or "").strip() else {}
 
-
-# ---------------------------
+# ---------------------------------------------------------------------------
 # Git local clone management
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 def ensure_repo(target_path: Path, repo_url: Optional[str]) -> None:
     """
@@ -78,7 +88,6 @@ def ensure_repo(target_path: Path, repo_url: Optional[str]) -> None:
             code, out, err = _run("git init", cwd=target_path)
             _ensure_ok(code, out, err, "git init")
 
-
 def ensure_remote(target_path: Path, repo_https_url_with_auth: str) -> None:
     """
     Ensure 'origin' exists and points to the tokenized HTTPS URL.
@@ -91,7 +100,6 @@ def ensure_remote(target_path: Path, repo_https_url_with_auth: str) -> None:
         if out.strip() != repo_https_url_with_auth:
             code, out, err = _run(f"git remote set-url origin {shlex.quote(repo_https_url_with_auth)}", cwd=target_path)
             _ensure_ok(code, out, err, "git remote set-url")
-
 
 def checkout_base(target_path: Path, base_branch: str) -> None:
     """
@@ -110,7 +118,6 @@ def checkout_base(target_path: Path, base_branch: str) -> None:
     else:
         code, out, err = _run(f"git checkout -B {shlex.quote(base_branch)}", cwd=target_path)
         _ensure_ok(code, out, err, "git checkout local base")
-
 
 def checkout_feature(target_path: Path, branch: str, base: str) -> None:
     """
@@ -138,10 +145,9 @@ def checkout_feature(target_path: Path, branch: str, base: str) -> None:
     if out.strip() != branch:
         raise RuntimeError(f"Not on expected branch: got '{out.strip()}', wanted '{branch}'")
 
-
-# ---------------------------
+# ---------------------------------------------------------------------------
 # File IO into the local clone
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 def write_files(target_path: Path, files: List[Dict[str, str]]) -> None:
     """
@@ -157,10 +163,9 @@ def write_files(target_path: Path, files: List[Dict[str, str]]) -> None:
             os.fsync(fh.fileno())
         print(f"[write_files] wrote {p} ({p.stat().st_size} bytes)")
 
-
-# ---------------------------
+# ---------------------------------------------------------------------------
 # Commit / Push / PR
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 def commit_all(target_path: Path, message: str, author: Optional[str] = None) -> None:
     code, out, err = _run("git add -A", cwd=target_path)
@@ -177,12 +182,10 @@ def commit_all(target_path: Path, message: str, author: Optional[str] = None) ->
     if nothing:
         raise RuntimeError("No changes to commit; nothing to push. Did you write any files?")
 
-
 def push_branch(target_path: Path, branch: str) -> None:
     code, out, err = _run(f"git push -u origin HEAD:refs/heads/{shlex.quote(branch)}", cwd=target_path)
     if code != 0:
         raise RuntimeError(f"git push failed: {err or out}")
-
 
 def open_pr(
     owner_repo: str,
@@ -260,10 +263,9 @@ def open_pr(
 
         raise RuntimeError(msg) from None
 
-
-# ---------------------------
+# ---------------------------------------------------------------------------
 # CI convenience (optional)
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 def ensure_actions_workflow(target_path: Path) -> None:
     wf = target_path / ".github" / "workflows" / "agent-ci.yml"
@@ -298,41 +300,40 @@ jobs:
         encoding="utf-8",
     )
 
-
-# ---------------------------
-# Local → Repo mapping
-# ---------------------------
+# ---------------------------------------------------------------------------
+# LOCAL → Repo mapping (using allow-list)
+# ---------------------------------------------------------------------------
 
 def prepare_files_from_local(task_id: str) -> List[Dict[str, str]]:
     """
-    Read all files under LOCAL_GENERATED_ROOT/<task_id> (LOCAL)
-    and produce a list of {"path": <repo-relative-dest>, "content": <text>}
-    to be written into the GIT_LOCAL clone.
+    LOCAL → repo mapping:
+      LOCAL_GENERATED_ROOT/<taskId>/{src,tests,meta,...}  →
+      REPO_GENERATED_DIR/<taskId>/{src,tests,meta,...}
     """
     cfg = load_config()
-    local_root = Path(cfg["LOCAL_GENERATED_ROOT"])     # ABSOLUTE
-    base_dir = local_root / task_id
+    local_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id            # ABSOLUTE, not a repo
+    repo_rel_prefix = Path(cfg["REPO_GENERATED_DIR"]) / task_id         # repo-relative destination
 
-    repo_rel_prefix = Path(cfg["REPO_GENERATED_DIR"])  # e.g. "generated" (repo-relative)
-
-    if not base_dir.exists():
-        raise FileNotFoundError(f"Local path {base_dir} does not exist")
+    if not local_root.exists():
+        raise FileNotFoundError(f"Local path {local_root} does not exist")
 
     out: List[Dict[str, str]] = []
-    for src in base_dir.rglob("*"):
+    for src in local_root.rglob("*"):
         if src.is_file():
-            rel = src.relative_to(base_dir)            # e.g., sub/dir/file.py
-            dst_repo_rel = repo_rel_prefix / task_id / rel
+            rel = src.relative_to(local_root)
+            if not _match_any(rel):
+                continue
+            # NOTE: do NOT append task_id again here (it's already in repo_rel_prefix)
+            dst_repo_rel = repo_rel_prefix / rel
             out.append({
                 "path": str(dst_repo_rel),
                 "content": src.read_text(encoding="utf-8"),
             })
     return out
 
-
-# ---------------------------
+# ---------------------------------------------------------------------------
 # Orchestration
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, Any], tests: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -344,15 +345,14 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     """
     cfg = load_config()
 
-    owner_repo = cfg["GITHUB_REPO"]                        # "owner/repo"
+    owner_repo = cfg["GITHUB_REPO"]                   # "owner/repo"
     token = cfg["GITHUB_TOKEN"]
     base = cfg["GIT_BASE"]
 
     remote_url = cfg["TARGET_REPO_URL"] or f"https://github.com/{owner_repo}.git"
-    # tokenized URL for pushing (basic form works broadly)
-    auth_url = f"https://{token}@github.com/{owner_repo}.git"
+    auth_url = f"https://{token}@github.com/{owner_repo}.git"  # tokenized push URL
 
-    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()  # GIT_LOCAL clone path
+    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()     # GIT_LOCAL clone path
 
     print(f"[prepare] repo={owner_repo} local={repo_path} task={task_id} base={base}")
 
@@ -378,6 +378,11 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
         raise RuntimeError("No files found to write (impl/tests empty and LOCAL folder missing)")
 
     write_files(repo_path, files)
+
+    # (Optional) quick visibility before committing
+    code, out, err = _run("git status --porcelain", cwd=repo_path)
+    print("[git status]", out or "(clean)")
+
     ensure_actions_workflow(repo_path)
     commit_all(repo_path, f"Task {task_id}: implement + tests\n\n{design.get('design_summary','')}")
     push_branch(repo_path, branch)

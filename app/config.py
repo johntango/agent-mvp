@@ -25,7 +25,8 @@ def load_config() -> Dict[str, Any]:
     # --- LOCAL (generator workspace data) ------------------------------------
     # Where your agent writes raw, generated artifacts before they are copied into the repo.
     local_generated_root = _abs(os.getenv("LOCAL_GENERATED_ROOT", "/workspaces/data"))
-
+    
+    local_generated_root.mkdir(parents=True, exist_ok=True)
     # Application-local data (DB, logs, UI tails) lives here:
     app_data_dir = _abs(os.getenv("APP_DATA_DIR", "/workspaces/data"))
 
@@ -45,6 +46,7 @@ def load_config() -> Dict[str, Any]:
     app_data_dir.mkdir(parents=True, exist_ok=True)
     reports_path.parent.mkdir(parents=True, exist_ok=True)
     state_db.parent.mkdir(parents=True, exist_ok=True)
+
 
     # --- Streaming/worker knobs ----------------------------------------------
     redpanda = os.getenv("REDPANDA_BROKERS", "127.0.0.1:9092")
@@ -88,6 +90,12 @@ def load_config() -> Dict[str, Any]:
 
         # Web/UI
         "WEB_PORT": int(os.getenv("WEB_PORT", "6066")),
+        # NEW (central library of stories, not under taskId)
+        "LOCAL_STORY_ROOT": os.getenv("LOCAL_STORY_ROOT", "/workspaces/stories"),  # ABSOLUTE
+
+
+        # Where to place a snapshot of the story inside each task folder in the repo
+        "REPO_STORY_SNAPSHOT_REL": "meta/story.json",  # repo-relative path under <REPO_GENERATED_DIR>/<taskId>/
     }
 
     return cfg
