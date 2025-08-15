@@ -307,28 +307,40 @@ jobs:
 def prepare_files_from_local(task_id: str) -> List[Dict[str, str]]:
     """
     LOCAL → repo mapping:
-      LOCAL_GENERATED_ROOT/<taskId>/{src,tests,meta,...}  →
+      GIT_LOCAL_REPO_PATH/{src,tests,meta,...}  →
       REPO_GENERATED_DIR/<taskId>/{src,tests,meta,...}
+
+    So for example:
+      /workspaces/agent-mvp/src/foo.py
+        → generated/<taskId>/src/foo.py (inside the GitHub repo clone)
     """
     cfg = load_config()
-    local_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id            # ABSOLUTE, not a repo
-    repo_rel_prefix = Path(cfg["REPO_GENERATED_DIR"]) / task_id         # repo-relative destination
+    local_repo = Path(cfg["LOCAL_REPO_PATH"]).resolve()    # ABSOLUTE path to your local working repo
+    repo_rel_prefix = Path(cfg["REPO_GENERATED_DIR"])   # repo-relative destination root
 
-    if not local_root.exists():
-        raise FileNotFoundError(f"Local path {local_root} does not exist")
+    if not local_repo.exists():
+        raise FileNotFoundError(f"Local repo path {local_repo} does not exist")
 
+    allowed_dirs = ["src", "tests", "meta"]
     out: List[Dict[str, str]] = []
-    for src in local_root.rglob("*"):
-        if src.is_file():
-            rel = src.relative_to(local_root)
-            if not _match_any(rel):
-                continue
-            # NOTE: do NOT append task_id again here (it's already in repo_rel_prefix)
-            dst_repo_rel = repo_rel_prefix / rel
-            out.append({
-                "path": str(dst_repo_rel),
-                "content": src.read_text(encoding="utf-8"),
-            })
+
+    for subdir in allowed_dirs:
+        base_dir = local_repo / subdir
+        if not base_dir.exists():
+            continue
+        for src in base_dir.rglob("*"):
+            if src.is_file():
+                rel = src.relative_to(local_repo)  # keep subdir (e.g., "src/foo.py")
+                dst_repo_rel = repo_rel_prefix / rel
+                out.append({
+                    "path": str(dst_repo_rel),
+                    "content": src.read_text(encoding="utf-8"),
+                })
+                print(f"[prepare_files_from_local] staged {src} → {dst_repo_rel}")
+
+    if not out:
+        raise RuntimeError(f"No files found under {local_repo}/{{src,tests,meta}}")
+
     return out
 
 # ---------------------------------------------------------------------------
@@ -348,6 +360,7 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     owner_repo = cfg["GITHUB_REPO"]                   # "owner/repo"
     token = cfg["GITHUB_TOKEN"]
     base = cfg["GIT_BASE"]
+    local_repo_path = cfg["LOCAL_REPO_PATH"]
 
     remote_url = cfg["TARGET_REPO_URL"] or f"https://github.com/{owner_repo}.git"
     auth_url = f"https://{token}@github.com/{owner_repo}.git"  # tokenized push URL
@@ -370,6 +383,7 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     files: List[Dict[str, str]] = []
     files += (impl.get("files") or [])
     files += (tests.get("test_files") or [])
+    
     if not files:
         files = prepare_files_from_local(task_id)
 

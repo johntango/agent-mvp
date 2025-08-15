@@ -9,6 +9,7 @@ import json, html
 from pathlib import Path
 from app.state import fetch_steps, fetch_step_deps
 from app.task_wrapper import generate_and_publish_task
+from pydantic import BaseModel
 
 cfg = load_config()
 DATA_DIR = cfg.get("APP_DATA_DIR")

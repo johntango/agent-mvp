@@ -49,7 +49,7 @@ def load_config() -> Dict:
         "APP_DATA_DIR": str(APP_DATA_DIR),
         "LOCAL_GENERATED_ROOT": str(LOCAL_GENERATED_ROOT),
         "LOCAL_STORY_ROOT": str(LOCAL_STORY_ROOT),
-
+        "LOCAL_REPO_PATH": str(GIT_LOCAL_REPO_PATH),
         # Files under LOCAL
         "REPORTS_PATH": str(Path(os.getenv("REPORTS_PATH", APP_DATA_DIR / "reports.jsonl")).resolve()),
         "STATE_DB": str(Path(os.getenv("STATE_DB", APP_DATA_DIR / "state.sqlite3")).resolve()),
