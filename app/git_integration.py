@@ -8,6 +8,7 @@ import fnmatch
 
 import requests  # pip install requests
 from app.config import load_config
+from app.repo_test_generator import 
 
 # ---------------------------------------------------------------------------
 # Allow-list: only code, tests, and minimal meta get committed
@@ -410,6 +411,18 @@ def prepare_repo_and_pr(
         print(f"[prepare] staging {orig_path} → {new_path}")
 
     write_files(repo_path, adjusted_files)
+
+    try:
+        from app.repo_test_generator import generate_repo_tests_from_story
+        generated = generate_repo_tests_from_story(task_id)
+        for p in generated:
+            print(f"[prepare] added generated test: {p}")
+    except FileNotFoundError:
+        # No story present -> skip silently
+        print(f"[prepare] story.json not found for task {task_id}; skipping test generation")
+    except Exception as e:
+        # Do not abort PR creation; surface message and continue
+        print(f"[prepare] test generation failed: {e}")
 
     # Quick visibility before committing
     code, out, err = _run("git status --porcelain", cwd=repo_path)
