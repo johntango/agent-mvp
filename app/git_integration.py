@@ -347,17 +347,23 @@ def prepare_files_from_local(task_id: str) -> List[Dict[str, str]]:
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, Any], tests: Dict[str, Any]) -> Dict[str, Any]:
+def prepare_repo_and_pr(
+    task_id: str,
+    design: Dict[str, Any],
+    impl: Dict[str, Any],
+    tests: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     Full flow:
       - Ensure local clone (GIT_LOCAL_REPO_PATH) exists and points to GITHUB_REPO.
       - Checkout base and feature branches.
       - Build file payloads (impl/tests, else LOCAL fallback).
-      - Write into local clone, commit, push, open PR.
+      - Write into local clone under generated/<taskId>/.
+      - Commit, push, and open PR.
     """
     cfg = load_config()
 
-    owner_repo = cfg["GITHUB_REPO"]                   # "owner/repo"
+    owner_repo = cfg["GITHUB_REPO"]                     # "owner/repo"
     token = cfg["GITHUB_TOKEN"]
     base = cfg["GIT_BASE"]
     local_repo_path = cfg["LOCAL_REPO_PATH"]
@@ -365,7 +371,7 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     remote_url = cfg["TARGET_REPO_URL"] or f"https://github.com/{owner_repo}.git"
     auth_url = f"https://{token}@github.com/{owner_repo}.git"  # tokenized push URL
 
-    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()     # GIT_LOCAL clone path
+    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()     # local clone folder
 
     print(f"[prepare] repo={owner_repo} local={repo_path} task={task_id} base={base}")
 
@@ -383,7 +389,7 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     files: List[Dict[str, str]] = []
     files += (impl.get("files") or [])
     files += (tests.get("test_files") or [])
-    
+
     if not files:
         files = prepare_files_from_local(task_id)
 
@@ -391,9 +397,21 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     if not files:
         raise RuntimeError("No files found to write (impl/tests empty and LOCAL folder missing)")
 
-    write_files(repo_path, files)
+    # ⬇️ Rewrite all paths to be under generated/<taskId>
+    adjusted_files: List[Dict[str, str]] = []
+    for f in files:
+        orig_path = Path(f["path"])
+        # ensure generated/<taskId>/…/<original path>
+        new_path = Path("generated") / task_id / orig_path
+        adjusted_files.append({
+            "path": str(new_path),
+            "content": f["content"],
+        })
+        print(f"[prepare] staging {orig_path} → {new_path}")
 
-    # (Optional) quick visibility before committing
+    write_files(repo_path, adjusted_files)
+
+    # Quick visibility before committing
     code, out, err = _run("git status --porcelain", cwd=repo_path)
     print("[git status]", out or "(clean)")
 
@@ -404,7 +422,15 @@ def prepare_repo_and_pr(task_id: str, design: Dict[str, Any], impl: Dict[str, An
     code, out, _ = _run("git rev-parse HEAD", cwd=repo_path)
     head_sha = out.strip() if code == 0 else ""
 
-    pr = open_pr(owner_repo, branch, base, f"Agent Task {task_id}", "Automated PR by agent orchestrator.", token)
+    pr = open_pr(
+        owner_repo,
+        branch,
+        base,
+        f"Agent Task {task_id}",
+        "Automated PR by agent orchestrator.",
+        token,
+    )
+
     return {
         "repo": owner_repo,
         "pr_url": pr.get("html_url"),
