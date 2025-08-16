@@ -134,6 +134,13 @@ async def _maybe_publish(tid: str) -> None:
     print("Checking if we should publish...")
     if get_meta(tid, "published", "0") == "1":
         return
+    try:
+        _ensure_stage_exists_for_task(tid)
+    except Exception as e:
+        # Make failure explicit and stop publish attempt
+        _append_report({"task_id": tid, "status": "error",
+                        "summary": f"Stage missing and could not auto-create: {e}"})
+        return
     if task_all_ok(tid) and not any_steps_remaining(tid):
         data_dir = Path(cfg["APP_DATA_DIR"]) / tid
         design = json.loads((data_dir / "design@v1.json").read_text(encoding="utf-8"))

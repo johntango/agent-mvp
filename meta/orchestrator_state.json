@@ -1,0 +1,10 @@
+{
+  "seen_story_files": {
+    "story001.json": {
+      "first_seen": 1755360453.3925476,
+      "last_sha256": "8c4c9fd3718cc3f7bcfbf78050451715dec30f14b588878e15af3859109fc5cc",
+      "task_id": "seed-story001"
+    }
+  },
+  "version": 2
+}
