@@ -95,10 +95,10 @@ async def story_watcher() -> None:
                 logger.info("[story_watcher] %s", summary)
 
                 # OPTIONAL: kick off the pipeline from the first step
-                # upsert_step(tid, _CHAIN[0])
-                # await step_requests.send(key=tid.encode(), value={
-                #     "task_id": tid, "step_id": _CHAIN[0], "attempt": 0, "inputs": {"story_id": sid}
-                # })
+                upsert_step(tid, _CHAIN[0])
+                await step_requests.send(key=tid.encode(), value={
+                     "task_id": tid, "step_id": _CHAIN[0], "attempt": 0, "inputs": {"story_id": sid}
+                 })
 
             except Exception as e:
                 err = f"Story seed failed for {sid}: {e}"
