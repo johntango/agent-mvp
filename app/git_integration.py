@@ -24,6 +24,89 @@ ALLOWED_GLOBS = [
     "README.md",
 ]
 
+import base64
+from pathlib import Path
+from typing import Dict, Any, List
+
+def _text_or_base64_bytes(p: Path) -> Dict[str, str]:
+    data = p.read_bytes()
+    try:
+        return {"content": data.decode("utf-8")}
+    except UnicodeDecodeError:
+        return {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"}
+
+def _files_from_impl_payload(impl: Dict[str, Any], design: Dict[str, Any]) -> List[Dict[str, str]]:
+    files: List[Dict[str, str]] = []
+    # Preferred shapes
+    if isinstance(impl.get("files"), list):
+        for it in impl["files"]:
+            if isinstance(it, dict) and "path" in it and "content" in it:
+                files.append({"path": str(it["path"]), "content": it["content"]})
+    elif isinstance(impl.get("artifacts"), dict):
+        for pth, code in impl["artifacts"].items():
+            files.append({"path": str(pth), "content": str(code)})
+
+    # Fallback: code_snippets → single file. Use design.files_touched[0] if provided.
+    if not files:
+        snippets = impl.get("code_snippets")
+        if isinstance(snippets, list) and snippets:
+            fname = None
+            ft = design.get("files_touched")
+            if isinstance(ft, list) and ft:
+                fname = str(ft[0])
+            if not fname:
+                fname = "src/main.py"
+            # Force into src/
+            p = Path(fname)
+            if not p.parts or p.parts[0] != "src":
+                p = Path("src") / p.name
+            if p.suffix == "":
+                p = p.with_suffix(".py")
+            files.append({"path": str(p), "content": "\n".join(snippets).rstrip() + "\n"})
+
+    return files
+
+def _files_from_tests_payload(tests: Dict[str, Any]) -> List[Dict[str, str]]:
+    files: List[Dict[str, str]] = []
+    # Accept tests.files or tests.test_files
+    for key in ("files", "test_files"):
+        arr = tests.get(key)
+        if isinstance(arr, list):
+            for it in arr:
+                if isinstance(it, dict) and "path" in it and "content" in it:
+                    files.append({"path": str(it["path"]), "content": it["content"]})
+    # Accept tests.code_blocks in strict <path: …> format (optional)
+    cb = tests.get("code_blocks")
+    if isinstance(cb, str) and "<path:" in cb:
+        files.extend(_parse_blocks_strict(cb))  # reuse if you already have a parser; else omit
+    return files
+
+def _files_from_local_staging(task_id: str, cfg: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Convert bucketed staging (src/tests/meta as Paths) into [{path, content}].
+    """
+    files: List[Dict[str, str]] = []
+    staging_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id
+    if not staging_root.exists():
+        return files
+    # Expect your existing prepare_files_from_local to return buckets; if not, just walk the tree.
+    try:
+        buckets = prepare_files_from_local(task_id)
+        iter_paths = []
+        for _, lst in (buckets or {}).items():
+            iter_paths.extend(lst or [])
+    except Exception:
+        iter_paths = list(staging_root.rglob("*"))
+    for p in iter_paths:
+        p = Path(p)
+        if not p.is_file():
+            continue
+        rel = p.relative_to(staging_root)  # src/... or tests/... or meta/...
+        item = {"path": str(rel)}
+        item.update(_text_or_base64_bytes(p))
+        files.append(item)
+    return files
+
 def _match_any(rel: Path) -> bool:
     s = str(rel).replace("\\", "/")
     return any(fnmatch.fnmatch(s, pat) for pat in ALLOWED_GLOBS)
@@ -388,29 +471,29 @@ def prepare_repo_and_pr(
     branch = f"task/{task_id}"
     checkout_feature(repo_path, branch, base)
 
+
+
     # Build file list: prefer explicit impl/tests, else read from LOCAL.
     files: List[Dict[str, str]] = []
-    files += (impl.get("files") or [])
-    files += (tests.get("test_files") or [])
+    files += _files_from_impl_payload(impl or {}, design or {})
+    files += _files_from_tests_payload(tests or {})
 
     if not files:
-        files = prepare_files_from_local(task_id)
+        files = _files_from_local_staging(task_id, cfg)
 
     print(f"[prepare] files to write: {len(files)}")
     if not files:
-        raise RuntimeError("No files found to write (impl/tests empty and LOCAL folder missing)")
+        raise RuntimeError("No files found to write (impl/tests empty and local staging has no files)")
 
-    # ⬇️ Rewrite all paths to be under generated/<taskId>
+
+        # ⬇️ Rewrite all paths to be under generated/<taskId>
     adjusted_files: List[Dict[str, str]] = []
     for f in files:
         orig_path = Path(f["path"])
-        # ensure generated/<taskId>/…/<original path>
         new_path = Path("generated") / task_id / orig_path
-        adjusted_files.append({
-            "path": str(new_path),
-            "content": f["content"],
-        })
+        adjusted_files.append({"path": str(new_path), "content": f["content"], **({} if "encoding" not in f else {"encoding": f["encoding"]})})
         print(f"[prepare] staging {orig_path} → {new_path}")
+
 
     write_files(repo_path, adjusted_files)
 
