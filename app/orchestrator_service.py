@@ -2,6 +2,7 @@ import json, asyncio, logging, os, hashlib
 from pathlib import Path
 from app.bus import app, step_results, step_requests, report_topic, make_report, dlq_topic, ci_watch
 from app.config import load_config
+from app.gitflow.materialize_impl import materialize_impl_to_staging
 from app.state import finish_step, schedule_retry, list_ready_steps, now, upsert_step, task_all_ok, any_steps_remaining, set_meta, get_meta
 from app.git_integration import prepare_repo_and_pr
 from app.test_generator import generate_tests_from_story
@@ -70,6 +71,11 @@ def _sha256_bytes(b: bytes) -> str:
 
 def _ensure_stage_exists_for_task(tid: str) -> None:
     stage_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / tid
+    src_dir = stage_root / "src"
+    # If tests/story_ref exist but src is empty, try materializing now
+    if not src_dir.exists() or not any(src_dir.rglob("*")):
+        from app.gitflow.materialize_impl import materialize_impl_to_staging
+        materialize_impl_to_staging(tid, impl=None)
     if stage_root.exists():
         return
 
@@ -181,6 +187,12 @@ async def orchestrator(stream):
                 await step_requests.send(key=tid.encode(), value={
                     "task_id": tid, "step_id": nxt, "attempt": 0, "inputs": {}
                 })
+                if step_id == "implement@v1":
+                    paths = materialize_impl_to_staging(tid, impl=None)
+                if paths:
+                    _append_report({"task_id": tid, "status": "impl_materialized",
+                        "summary": f"Wrote {len(paths)} src files"})
+                    
             await _maybe_publish(tid)
         else:
             if attempt < cfg["MAX_ATTEMPTS"]:
