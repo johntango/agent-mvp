@@ -11,32 +11,44 @@ def _detect_workspace_root() -> Path:
         if p.exists():
             return p
 
-    # 2) Allow override
+    # 2) Allow explicit override
     ow = os.getenv("LOCAL_WORKSPACE_ROOT")
     if ow:
         p = Path(ow).resolve()
         if p.exists():
             return p
 
-    # 3) Infer from this file’s location by looking for repo markers
+    # 3) Infer by scanning upward for repo markers
     here = Path(__file__).resolve()
-    for cand in [*here.parents]:
+    for cand in here.parents:
         if (cand / ".git").exists() or (cand / "pyproject.toml").exists():
             return cand
 
-    # 4) Fallback to CWD
+    # 4) Fallback
     return Path.cwd()
+
 
 def load_config() -> Dict:
     token = os.environ["CODE_GEN_KEY"]  # required
 
     WORKSPACE_ROOT = _detect_workspace_root()
 
-    # Keep backward compatibility: generated defaults live under <workspace>/data
+    # ── Local, non-git operational data (stable) ─────────────────────────────────
+    # Keep reports/DB etc. in <workspace>/data by default.
     APP_DATA_DIR = Path(os.getenv("APP_DATA_DIR", WORKSPACE_ROOT / "data")).resolve()
-    LOCAL_GENERATED_ROOT = Path(os.getenv("LOCAL_GENERATED_ROOT", str(APP_DATA_DIR))).resolve()
-    LOCAL_STORY_ROOT = Path(os.getenv("LOCAL_STORY_ROOT", WORKSPACE_ROOT / "stories")).resolve()
 
+    # ── Local staging area for generated code (step 1 of 2) ─────────────────────
+    # *** This is the key change: default to <workspace>/generated ***
+    LOCAL_GENERATED_ROOT = Path(
+        os.getenv("LOCAL_GENERATED_ROOT", WORKSPACE_ROOT / "generated")
+    ).resolve()
+
+    # Canonical stories library (optional, independent of per-task snapshots)
+    LOCAL_STORY_ROOT = Path(
+        os.getenv("LOCAL_STORY_ROOT", WORKSPACE_ROOT / "stories")
+    ).resolve()
+
+    # ── Local git clone that mirrors the GitHub repo (step 2 of 2) ───────────────
     GIT_LOCAL_REPO_PATH = Path(
         os.getenv("GIT_LOCAL_REPO_PATH", WORKSPACE_ROOT / "autoGenCode")
     ).resolve()
@@ -47,18 +59,22 @@ def load_config() -> Dict:
 
         # LOCAL (non-git) paths
         "APP_DATA_DIR": str(APP_DATA_DIR),
-        "LOCAL_GENERATED_ROOT": str(LOCAL_GENERATED_ROOT),
+        "LOCAL_GENERATED_ROOT": str(LOCAL_GENERATED_ROOT),  # e.g. /workspaces/agent-mvp/generated
         "LOCAL_STORY_ROOT": str(LOCAL_STORY_ROOT),
+
+        # For legacy code that expects this name to point at the *workspace*,
+        # keep LOCAL_REPO_PATH aligned with the local clone path (or rename in code).
         "LOCAL_REPO_PATH": str(GIT_LOCAL_REPO_PATH),
-        # Files under LOCAL
+
+        # Files under LOCAL (operational)
         "REPORTS_PATH": str(Path(os.getenv("REPORTS_PATH", APP_DATA_DIR / "reports.jsonl")).resolve()),
         "STATE_DB": str(Path(os.getenv("STATE_DB", APP_DATA_DIR / "state.sqlite3")).resolve()),
 
         # GitHub / git
         "GITHUB_REPO": os.getenv("GITHUB_REPO", "johntango/autoGenCode"),
         "TARGET_REPO_URL": os.getenv("TARGET_REPO_URL", "https://github.com/johntango/autoGenCode.git"),
-        "GIT_LOCAL_REPO_PATH": str(GIT_LOCAL_REPO_PATH),
-        "REPO_GENERATED_DIR": os.getenv("REPO_GENERATED_DIR", "generated"),
+        "GIT_LOCAL_REPO_PATH": str(GIT_LOCAL_REPO_PATH),  # e.g. /workspaces/agent-mvp/autoGenCode
+        "REPO_GENERATED_DIR": os.getenv("REPO_GENERATED_DIR", "generated"),  # path inside the repo clone
         "GIT_BASE": os.getenv("GIT_BASE", "main"),
 
         # Runtime topics / params
