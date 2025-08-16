@@ -6,7 +6,8 @@ from app.state import finish_step, schedule_retry, list_ready_steps, now, upsert
 from app.git_integration import prepare_repo_and_pr
 from app.test_generator import generate_tests_from_story
 import hashlib
-from app.gitflow.materialize_impl import materialize_impl_to_staging
+from app.gitflow.materialize_impl import materialize_impl_to_staging 
+from app.gitflow.materialize_tests import ensure_tests_for_task
 
 cfg = load_config()
 logger = logging.getLogger("agent-mvp.orchestrator")
@@ -69,8 +70,14 @@ def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 def _ensure_stage_exists_for_task(tid: str) -> None:
+   
     stage_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / tid
+    stage_root.mkdir(parents=True, exist_ok=True)
     src_dir = stage_root / "src"
+    # Ensure tests exist
+    tests_dir = stage_root / "tests"
+    if not tests_dir.exists() or not any(tests_dir.rglob("*.py")):
+        ensure_tests_for_task(tid)
     # If tests/story_ref exist but src is empty, try materializing now
     if not src_dir.exists() or not any(src_dir.rglob("*")):
         from app.gitflow.materialize_impl import materialize_impl_to_staging
@@ -188,6 +195,14 @@ async def orchestrator(stream):
                 })
                 if step_id == "implement@v1":
                     paths = materialize_impl_to_staging(tid, impl=None)
+                    try:
+                        written = ensure_tests_for_task(tid)
+                        if written:
+                            _append_report({"task_id": tid, "status": "tests_materialized",
+                                            "summary": f"Wrote {len(written)} test file(s)"})
+                    except Exception as e:
+                        _append_report({"task_id": tid, "status": "warn",
+                                        "summary": f"Could not materialize tests: {e}"})
                     if paths:
                         _append_report({"task_id": tid, "status": "impl_materialized",
                         "summary": f"Wrote {len(paths)} src files"})
