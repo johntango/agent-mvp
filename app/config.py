@@ -45,7 +45,7 @@ def load_config() -> Dict:
 
     # Canonical stories library (optional, independent of per-task snapshots)
     LOCAL_STORY_ROOT = Path(
-        os.getenv("LOCAL_STORY_ROOT", WORKSPACE_ROOT / "stories")
+        os.getenv("LOCAL_STORY_ROOT", "/workspaces/agent-mvp/stories")
     ).resolve()
 
     # ── Local git clone that mirrors the GitHub repo (step 2 of 2) ───────────────
@@ -60,7 +60,7 @@ def load_config() -> Dict:
         # LOCAL (non-git) paths
         "APP_DATA_DIR": str(APP_DATA_DIR),
         "LOCAL_GENERATED_ROOT": str(LOCAL_GENERATED_ROOT),  # e.g. /workspaces/agent-mvp/generated
-        "LOCAL_STORY_ROOT": str(LOCAL_STORY_ROOT),
+         "LOCAL_STORY_ROOT": "/workspaces/agent-mvp/stories",
 
         # For legacy code that expects this name to point at the *workspace*,
         # keep LOCAL_REPO_PATH aligned with the local clone path (or rename in code).

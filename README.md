@@ -43,6 +43,14 @@ make publish
 # 2) Enqueue a task
 make send TEXT="Write a tiny Python program that prints 'Hello Earthling'"
 
+# 1) Generate tests for task abc123 from shared story login_v1
+python -m app.scripts.test_generator --task abc123 --story login_v1
+
+# 2) Promote staged files into the repo and open a PR (if possible)
+python -c "from app.gitflow.promote import prepare_repo_and_pr; print(prepare_repo_and_pr('abc123'))"
+
+
+
 # 3) Inspect artifacts
 tail -n 50 ./data/reports.jsonl     # (planner writes 'received'; orchestrator writes 'done' on completion)
 ls -la ./data/<task_id>             # design@v1.json, implement@v1.json, test@v1.json, review@v1.json
