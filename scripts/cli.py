@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse
 
-from app.test_generator import generate_tests_from_story
+from app.agents.test_generator import generate_tests_from_story
 from scripts.pipeline_promote import promote_to_repo, commit_push_open_pr
 
 

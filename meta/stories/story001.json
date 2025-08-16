@@ -1,0 +1,32 @@
+{
+  "feature": "Shipping cost calculation",
+  "module": "shipping",
+  "function": "calculate_shipping",
+  "cases": [
+    {
+      "name": "domestic_standard",
+      "inputs": { "country": "US", "method": "standard", "weight_kg": 2.0 },
+      "expect": { "equals": "6.00" }
+    },
+    {
+      "name": "domestic_express",
+      "inputs": { "country": "US", "method": "express", "weight_kg": 1.5 },
+      "expect": { "equals": "13.20" }
+    },
+    {
+      "name": "international_standard",
+      "inputs": { "country": "CA", "method": "standard", "weight_kg": 3.0 },
+      "expect": { "equals": "16.50" }
+    },
+    {
+      "name": "invalid_method",
+      "inputs": { "country": "US", "method": "overnight", "weight_kg": 1.0 },
+      "expect": { "raises": "InvalidMethod" }
+    },
+    {
+      "name": "invalid_weight",
+      "inputs": { "country": "US", "method": "standard", "weight_kg": 0.0 },
+      "expect": { "raises": "InvalidWeight" }
+    }
+  ]
+}

@@ -61,7 +61,7 @@ def load_config() -> Dict:
         "APP_DATA_DIR": str(APP_DATA_DIR),
         "LOCAL_GENERATED_ROOT": str(LOCAL_GENERATED_ROOT),  # e.g. /workspaces/agent-mvp/generated
         "LOCAL_STORY_ROOT": "/workspaces/agent-mvp/meta/stories",
-        "REPO_META_STORIES_DIR": "generated/meta/stories"
+        "REPO_META_STORIES_DIR": "generated/meta/stories",
 
 
 

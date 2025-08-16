@@ -4,7 +4,9 @@ from app.bus import app, step_results, step_requests, report_topic, make_report,
 from app.config import load_config
 from app.state import finish_step, schedule_retry, list_ready_steps, now, upsert_step, task_all_ok, any_steps_remaining, set_meta, get_meta
 from app.git_integration import prepare_repo_and_pr
-from app.agents.test_generator import generate_tests_from_story
+from app.test_generator import generate_tests_from_story
+import hashlib
+
 
 cfg = load_config()
 logger = logging.getLogger("agent-mvp.orchestrator")
@@ -14,6 +16,12 @@ _BACKOFF = [int(x) for x in cfg["BACKOFF_S"].split(",") if x.strip()]
 _MAX = cfg["MAX_ATTEMPTS"]
 
 LOGFILE = Path(cfg["APP_DATA_DIR"]) / "reports.jsonl"
+STORY_ROOT = Path(cfg.get("LOCAL_STORY_ROOT", "/workspaces/agent-mvp/meta/stories"))
+STORY_POLL_S = int(cfg.get("STORY_POLL_S", "15"))
+# this below is a file that stores the state of the orchestrator
+STORY_STATE_PATH = Path(cfg["WORKSPACE_ROOT"]) / "meta" / "orchestrator_state.json"
+
+
 def _append_report(obj: dict) -> None:
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     with LOGFILE.open("a", encoding="utf-8") as f:
@@ -38,7 +46,8 @@ def _load_story_state() -> dict:
             return json.loads(STORY_STATE_PATH.read_text(encoding="utf-8"))
         except Exception:
             STORY_STATE_PATH.rename(STORY_STATE_PATH.with_suffix(".corrupt.json"))
-    return {"seen_story_ids": {}, "version": 1}
+    # keyed by filename, not story_id
+    return {"seen_story_files": {}, "version": 2}
 
 def _save_story_state(state: dict) -> None:
     STORY_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -46,65 +55,77 @@ def _save_story_state(state: dict) -> None:
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
     tmp.replace(STORY_STATE_PATH)
 
-def _iter_story_ids() -> list[str]:
+def _iter_story_files() -> list[Path]:
     if not STORY_ROOT.exists():
         return []
-    out = []
-    for child in STORY_ROOT.iterdir():
-        if child.is_dir() and (child / "story.json").exists():
-            out.append(child.name)
-    out.sort()
-    return out
+    return sorted([p for p in STORY_ROOT.glob("*.json") if p.is_file()])
 
-def _safe_task_id(story_id: str) -> str:
-    base = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in story_id).strip("-")
-    base = base or "story"
-    return f"seed-{base}"
+def _safe_task_id_from_filename(fname: str) -> str:
+    stem = Path(fname).stem
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in stem).strip("-") or "story"
+    return f"seed-{safe}"
 
 def _sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
-# ── New: periodic story watcher ────────────────────────────────────────────────
+def _ensure_stage_exists_for_task(tid: str) -> None:
+    stage_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / tid
+    if stage_root.exists():
+        return
+
+    # Try pointer
+    refp = stage_root / "meta" / "story_ref.json"
+    story_file = None
+    if refp.exists():
+        try:
+            j = json.loads(refp.read_text(encoding="utf-8"))
+            story_file = j.get("story_file")
+        except Exception:
+            pass
+
+    # Fallback: if exactly one story file exists
+    if not story_file:
+        files = [p.name for p in Path(cfg["LOCAL_STORY_ROOT"]).glob("*.json")]
+        if len(files) == 1:
+            story_file = files[0]
+
+    if not story_file:
+        raise RuntimeError(f"Cannot infer story file for task {tid}; ensure meta/stories contains a single story or generate with --story-file.")
+
+    generate_tests_from_story(task_id=tid, story_file=story_file)
+
+
 @app.timer(interval=STORY_POLL_S)
 async def story_watcher() -> None:
-    """
-    Detect new meta/stories/<story_id>/story.json and run test_generator once per new story.
-    """
     try:
         state = _load_story_state()
-        seen = state["seen_story_ids"]
-
-        for sid in _iter_story_ids():
-            if sid in seen:
+        seen = state["seen_story_files"]
+        for fp in _iter_story_files():
+            name = fp.name
+            if name in seen:
                 continue
 
-            story_path = STORY_ROOT / sid / "story.json"
             try:
-                tid = _safe_task_id(sid)
-                generate_tests_from_story(task_id=tid, story_id=sid)
+                tid = _safe_task_id_from_filename(name)
+                # run generator with explicit story_file (filename)
+                generate_tests_from_story(task_id=tid, story_file=name)
 
-                sha = _sha256_bytes(story_path.read_bytes())
-                seen[sid] = {"first_seen": now(), "last_sha256": sha, "task_id": tid}
+                seen[name] = {
+                    "first_seen": now(),
+                    "last_sha256": _sha256_bytes(fp.read_bytes()),
+                    "task_id": tid,
+                }
                 _save_story_state(state)
+                _append_report({"task_id": tid, "status": "story_seeded", "summary": f"Generated tests from {name}"})
 
-                summary = f"Generated tests for story_id={sid} task_id={tid}"
-                _append_report({"task_id": tid, "status": "story_seeded", "summary": summary})
-                if AUTO_REPORT:
-                    await report_topic.send(key=tid.encode(), value=make_report(tid, "story_seeded", summary))
-
-                logger.info("[story_watcher] %s", summary)
-
-                # OPTIONAL: kick off the pipeline from the first step
-                upsert_step(tid, _CHAIN[0])
-                await step_requests.send(key=tid.encode(), value={
-                     "task_id": tid, "step_id": _CHAIN[0], "attempt": 0, "inputs": {"story_id": sid}
-                 })
+                # OPTIONAL: kick off your first pipeline step
+                # upsert_step(tid, _CHAIN[0])
+                # await step_requests.send(key=tid.encode(), value={
+                #   "task_id": tid, "step_id": _CHAIN[0], "attempt": 0, "inputs": {"story_file": name}
+                # })
 
             except Exception as e:
-                err = f"Story seed failed for {sid}: {e}"
-                _append_report({"task_id": _safe_task_id(sid), "status": "error", "summary": err})
-                logger.exception(err)
-
+                _append_report({"task_id": _safe_task_id_from_filename(name), "status": "error", "summary": f"Story seed failed for {name}: {e}"})
     except Exception as outer:
         logger.exception("story_watcher outer error: %s", outer)
 
@@ -119,6 +140,7 @@ async def _maybe_publish(tid: str) -> None:
         impl   = json.loads((data_dir / "implement@v1.json").read_text(encoding="utf-8"))
         tests  = json.loads((data_dir / "test@v1.json").read_text(encoding="utf-8"))
         try:
+            print(f"Preparing PR for task {tid} with design={design}, impl={impl}, tests={tests}")
             print(f"Preparing PR for task {tid} with calling prepare_repo_and_pr")
             pr_info = prepare_repo_and_pr(tid, design, impl, tests)
             pr_url = pr_info.get("pr_url")
