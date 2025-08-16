@@ -46,18 +46,44 @@ make send TEXT="Write a tiny Python program that prints 'Hello Earthling'"
 # 1) Generate tests for task abc123 from shared story login_v1
 python -m app.scripts.test_generator --task abc123 --story login_v1
 
-# 2) Promote staged files into the repo and open a PR (if possible)
-python -c "from app.gitflow.promote import prepare_repo_and_pr; print(prepare_repo_and_pr('abc123'))"
-
-
+# Promote (task outputs + publish the story into repo meta) and open a PR
+python - <<'PY'
+from app.gitflow.promote import promote_to_repo, commit_push_open_pr
+promote_to_repo("TASK-123", publish_story=True)
+commit_push_open_pr("TASK-123")
+PY
 
 # 3) Inspect artifacts
 tail -n 50 ./data/reports.jsonl     # (planner writes 'received'; orchestrator writes 'done' on completion)
 ls -la ./data/<task_id>             # design@v1.json, implement@v1.json, test@v1.json, review@v1.json
 sqlite3 ./data/state.sqlite '.schema' '.tables'
-
 ---
-
+/workspaces/agent-mvp
+├─ app/
+│  │  └─ test_generator.py         # Reads story from meta/stories/<id>/story.json, writes tests + story_ref.json
+│  ├─ gitflow/
+│  │  └─ promote.py                # Mirrors /generated/<taskId> → repo; publishes stories → repo generated/meta/stories
+│  ├─ config.py                    # Defines LOCAL_STORY_ROOT, LOCAL_GENERATED_ROOT, LOCAL_REPO_PATH, REPO_* dirs
+│  └─ cli.py (optional)            # Thin CLI wrappers: gen-tests, promote
+├─ meta/
+│  └─ stories/
+│     └─ <story_id>/
+│        └─ story.json             # Single source of truth (workspace registry)
+├─ generated/
+│  └─ <taskId>/
+│     ├─ tests/
+│     │  └─ test_story.py          # LLM-produced pytest
+│     └─ meta/
+│        └─ story_ref.json         # Pointer: {story_id, sha256, timestamp}
+└─ autoGenCode/                    # Local clone of johntango/autoGenCode
+   └─ generated/
+      ├─ <taskId>/                 # Mirrored task artifacts (src/tests/meta)
+      │  ├─ tests/…
+      │  └─ meta/…
+      └─ meta/
+         └─ stories/
+            └─ <story_id>/
+               └─ story.json       # Published story that gets committed/pushed
 ## 1. Architecture
 | Topic (env var)                             | Purpose                                           | Producers (write)                                                                               | Consumers (subscribe)                                                |
 | ------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
