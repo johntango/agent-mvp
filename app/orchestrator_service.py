@@ -1,9 +1,10 @@
-import json, asyncio, logging, os
+import json, asyncio, logging, os, hashlib
 from pathlib import Path
-from app.bus import app, step_results, step_requests, report_topic, make_report, dlq_topic, ci_watch    
+from app.bus import app, step_results, step_requests, report_topic, make_report, dlq_topic, ci_watch
 from app.config import load_config
 from app.state import finish_step, schedule_retry, list_ready_steps, now, upsert_step, task_all_ok, any_steps_remaining, set_meta, get_meta
 from app.git_integration import prepare_repo_and_pr
+from app.agents.test_generator import generate_tests_from_story
 
 cfg = load_config()
 logger = logging.getLogger("agent-mvp.orchestrator")
@@ -12,15 +13,11 @@ _CHAIN = ["design@v1", "implement@v1", "test@v1", "review@v1"]
 _BACKOFF = [int(x) for x in cfg["BACKOFF_S"].split(",") if x.strip()]
 _MAX = cfg["MAX_ATTEMPTS"]
 
-
-
-cfg = load_config()
 LOGFILE = Path(cfg["APP_DATA_DIR"]) / "reports.jsonl"
 def _append_report(obj: dict) -> None:
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     with LOGFILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(obj) + "\n")
-
 
 def _next_step(step_id: str) -> str | None:
     try:
@@ -28,33 +25,134 @@ def _next_step(step_id: str) -> str | None:
         return _CHAIN[i+1] if i+1 < len(_CHAIN) else None
     except ValueError:
         return None
-              
+
+# ── New: Story registry watcher configuration ──────────────────────────────────
+STORY_ROOT = Path(cfg.get("LOCAL_STORY_ROOT", "/workspaces/agent-mvp/meta/stories"))
+STORY_POLL_S = int(cfg.get("STORY_POLL_S", "15"))
+AUTO_REPORT = cfg.get("ORCH_AUTO_REPORT", "1") == "1"
+STORY_STATE_PATH = Path(cfg["WORKSPACE_ROOT"]) / "meta" / "orchestrator_state.json"
+
+def _load_story_state() -> dict:
+    if STORY_STATE_PATH.exists():
+        try:
+            return json.loads(STORY_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            STORY_STATE_PATH.rename(STORY_STATE_PATH.with_suffix(".corrupt.json"))
+    return {"seen_story_ids": {}, "version": 1}
+
+def _save_story_state(state: dict) -> None:
+    STORY_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STORY_STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp.replace(STORY_STATE_PATH)
+
+def _iter_story_ids() -> list[str]:
+    if not STORY_ROOT.exists():
+        return []
+    out = []
+    for child in STORY_ROOT.iterdir():
+        if child.is_dir() and (child / "story.json").exists():
+            out.append(child.name)
+    out.sort()
+    return out
+
+def _safe_task_id(story_id: str) -> str:
+    base = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in story_id).strip("-")
+    base = base or "story"
+    return f"seed-{base}"
+
+def _sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+# ── New: periodic story watcher ────────────────────────────────────────────────
+@app.timer(interval=STORY_POLL_S)
+async def story_watcher() -> None:
+    """
+    Detect new meta/stories/<story_id>/story.json and run test_generator once per new story.
+    """
+    try:
+        state = _load_story_state()
+        seen = state["seen_story_ids"]
+
+        for sid in _iter_story_ids():
+            if sid in seen:
+                continue
+
+            story_path = STORY_ROOT / sid / "story.json"
+            try:
+                tid = _safe_task_id(sid)
+                generate_tests_from_story(task_id=tid, story_id=sid)
+
+                sha = _sha256_bytes(story_path.read_bytes())
+                seen[sid] = {"first_seen": now(), "last_sha256": sha, "task_id": tid}
+                _save_story_state(state)
+
+                summary = f"Generated tests for story_id={sid} task_id={tid}"
+                _append_report({"task_id": tid, "status": "story_seeded", "summary": summary})
+                if AUTO_REPORT:
+                    await report_topic.send(key=tid.encode(), value=make_report(tid, "story_seeded", summary))
+
+                logger.info("[story_watcher] %s", summary)
+
+                # OPTIONAL: kick off the pipeline from the first step
+                # upsert_step(tid, _CHAIN[0])
+                # await step_requests.send(key=tid.encode(), value={
+                #     "task_id": tid, "step_id": _CHAIN[0], "attempt": 0, "inputs": {"story_id": sid}
+                # })
+
+            except Exception as e:
+                err = f"Story seed failed for {sid}: {e}"
+                _append_report({"task_id": _safe_task_id(sid), "status": "error", "summary": err})
+                logger.exception(err)
+
+    except Exception as outer:
+        logger.exception("story_watcher outer error: %s", outer)
+
+# ── Existing publish logic ─────────────────────────────────────────────────────
+async def _maybe_publish(tid: str) -> None:
+    print("Checking if we should publish...")
+    if get_meta(tid, "published", "0") == "1":
+        return
+    if task_all_ok(tid) and not any_steps_remaining(tid):
+        data_dir = Path(cfg["APP_DATA_DIR"]) / tid
+        design = json.loads((data_dir / "design@v1.json").read_text(encoding="utf-8"))
+        impl   = json.loads((data_dir / "implement@v1.json").read_text(encoding="utf-8"))
+        tests  = json.loads((data_dir / "test@v1.json").read_text(encoding="utf-8"))
+        try:
+            print(f"Preparing PR for task {tid} with calling prepare_repo_and_pr")
+            pr_info = prepare_repo_and_pr(tid, design, impl, tests)
+            pr_url = pr_info.get("pr_url")
+            _append_report({"task_id": tid, "status": "pr_opened", "summary": f"PR: {pr_url}"})
+            await report_topic.send(key=tid.encode(), value=make_report(tid, "pr", f"Opened PR: {pr_url}"))
+            await ci_watch.send(key=tid.encode(), value={
+                "task_id": tid,
+                "repo": pr_info.get("repo"),
+                "pr_number": pr_info.get("pr_number"),
+                "head_sha": pr_info.get("head_sha"),
+                "head_ref": pr_info.get("head_ref"),
+            })
+            set_meta(tid, "published", "1")
+        except Exception as e:
+            _append_report({"task_id": tid, "status": "error", "summary": f"PR error: {e}"})
+            await report_topic.send(key=tid.encode(), value=make_report(tid, "error", f"PR error: {e}"))
+
+# ── Existing pipeline orchestrator ─────────────────────────────────────────────
+@app.agent(step_results)
 async def orchestrator(stream):
     async for res in stream:
         tid = res["task_id"]; step_id = res["step_id"]
-        status = res.get("status", "")
-        attempt = int(res.get("attempt", 1))
+        status = res.get("status", ""); attempt = int(res.get("attempt", 1))
 
         if status == "ok":
             finish_step(tid, step_id, "ok", None)
-
-            # Promote all steps that are now ready
             ready = list_ready_steps(tid)
             for nxt in ready:
-                # Ensure step row exists and is in 'queued' (safe idempotent)
                 upsert_step(tid, nxt)
                 _append_report({"task_id": tid, "status": "next", "stage": step_id, "summary": f"Enqueue {nxt}"})
                 await step_requests.send(key=tid.encode(), value={
-                    "task_id": tid, "step_id": nxt, "attempt": 0, "inputs": {}  # worker rehydrates
+                    "task_id": tid, "step_id": nxt, "attempt": 0, "inputs": {}
                 })
-             # Check if we should publish
             await _maybe_publish(tid)
-            # If nothing else is ready and no more queued steps exist, you may mark done
-            # (Your existing PR/CI logic can remain when final 'review@v1' completes.)
-            if not ready and step_id == "review@v1":
-                _append_report({"task_id": tid, "status": "done", "summary": f"Task {tid} completed"})
-                await report_topic.send(key=tid.encode(), value=make_report(tid, "done", f"Task {tid} completed"))
-
         else:
             if attempt < cfg["MAX_ATTEMPTS"]:
                 backoff_s = int([int(x) for x in cfg["BACKOFF_S"].split(",") if x.strip()][min(attempt-1, len(cfg["BACKOFF_S"].split(","))-1)])
@@ -70,64 +168,6 @@ async def orchestrator(stream):
                 _append_report({"task_id": tid, "status": "error", "stage": step_id, "summary": f"Failed after {attempt} attempts"})
                 await dlq_topic.send(key=tid.encode(), value=res)
                 await report_topic.send(key=tid.encode(), value=make_report(tid, "error", f"{step_id} failed after {attempt} attempts"))
-
-async def _maybe_publish(tid: str) -> None:
-    # Don’t publish twice
-    print("Checking if we should publish...")
-    if get_meta(tid, "published", "0") == "1":
-        return
-    # Only publish when every step is ok and no queued/running remain
-    if task_all_ok(tid) and not any_steps_remaining(tid):
-        # Load artifacts and open PR
-        data_dir = Path(cfg["APP_DATA_DIR"]) / tid
-        design = json.loads((data_dir / "design@v1.json").read_text(encoding="utf-8"))
-        impl   = json.loads((data_dir / "implement@v1.json").read_text(encoding="utf-8"))
-        tests  = json.loads((data_dir / "test@v1.json").read_text(encoding="utf-8"))
-
-        try:
-            print(f"Preparing PR for task {tid} with calling prepare_repo_and_pr")
-            pr_info = prepare_repo_and_pr(tid, design, impl, tests)
-            pr_url = pr_info.get("pr_url")
-            _append_report({"task_id": tid, "status": "pr_opened", "summary": f"PR: {pr_url}"})
-            await report_topic.send(key=tid.encode(), value=make_report(tid, "pr", f"Opened PR: {pr_url}"))
-
-            # Enqueue CI monitor
-            await ci_watch.send(key=tid.encode(), value={
-                "task_id": tid,
-                "repo": pr_info.get("repo"),
-                "pr_number": pr_info.get("pr_number"),
-                "head_sha": pr_info.get("head_sha"),
-                "head_ref": pr_info.get("head_ref"),
-            })
-            set_meta(tid, "published", "1")
-        except Exception as e:
-            _append_report({"task_id": tid, "status": "error", "summary": f"PR error: {e}"})
-            await report_topic.send(key=tid.encode(), value=make_report(tid, "error", f"PR error: {e}"))
-
-@app.agent(step_results)
-async def orchestrator(stream):
-    async for res in stream:
-        tid = res["task_id"]; step_id = res["step_id"]
-        status = res.get("status", ""); attempt = int(res.get("attempt", 1))
-
-        if status == "ok":
-            finish_step(tid, step_id, "ok", None)
-
-            # Promote all steps now ready
-            ready = list_ready_steps(tid)
-            for nxt in ready:
-                upsert_step(tid, nxt)
-                _append_report({"task_id": tid, "status": "next", "stage": step_id, "summary": f"Enqueue {nxt}"})
-                await step_requests.send(key=tid.encode(), value={
-                    "task_id": tid, "step_id": nxt, "attempt": 0, "inputs": {}
-                })
-
-            # Check if we should publish
-            await _maybe_publish(tid)
-
-        else:
-            # ... your existing retry/DLQ logic unchanged ...
-            pass       
 
 if __name__ == "__main__":
     app.main()
