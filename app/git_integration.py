@@ -307,42 +307,44 @@ jobs:
 
 def prepare_files_from_local(task_id: str) -> List[Dict[str, str]]:
     """
-    LOCAL → repo mapping:
-      GIT_LOCAL_REPO_PATH/{src,tests,meta,...}  →
-      REPO_GENERATED_DIR/<taskId>/{src,tests,meta,...}
+    Stage → repo mapping:
+      LOCAL_GENERATED_ROOT/<taskId>/{src,tests,meta}/**/*
+        → REPO_GENERATED_DIR/<taskId>/{src,tests,meta}/**/*  (repo-relative)
 
-    So for example:
-      /workspaces/agent-mvp/src/foo.py
-        → generated/<taskId>/src/foo.py (inside the GitHub repo clone)
+    Example:
+      /workspaces/agent-mvp/generated/abc123/src/foo.py
+        → generated/abc123/src/foo.py  (inside the local Git clone)
     """
     cfg = load_config()
-    local_repo = Path(cfg["LOCAL_REPO_PATH"]).resolve()    # ABSOLUTE path to your local working repo
-    repo_rel_prefix = Path(cfg["REPO_GENERATED_DIR"])   # repo-relative destination root
 
-    if not local_repo.exists():
-        raise FileNotFoundError(f"Local repo path {local_repo} does not exist")
+    stage_root      = Path(cfg["LOCAL_GENERATED_ROOT"]).resolve() / task_id
+    repo_rel_prefix = Path(cfg["REPO_GENERATED_DIR"]) / task_id  # ensure <taskId> is included
 
-    allowed_dirs = ["src", "tests", "meta"]
+    if not stage_root.exists():
+        raise FileNotFoundError(f"Stage path not found: {stage_root}")
+
     out: List[Dict[str, str]] = []
-
-    for subdir in allowed_dirs:
-        base_dir = local_repo / subdir
-        if not base_dir.exists():
+    for sub in ("src", "tests", "meta"):
+        base = stage_root / sub
+        if not base.exists():
             continue
-        for src in base_dir.rglob("*"):
+        for src in base.rglob("*"):
             if src.is_file():
-                rel = src.relative_to(local_repo)  # keep subdir (e.g., "src/foo.py")
-                dst_repo_rel = repo_rel_prefix / rel
+                # keep "src/…", "tests/…", or "meta/…" relative to the <taskId> root
+                rel_from_task = src.relative_to(stage_root)
+                dst_repo_rel  = repo_rel_prefix / rel_from_task
                 out.append({
                     "path": str(dst_repo_rel),
                     "content": src.read_text(encoding="utf-8"),
                 })
-                print(f"[prepare_files_from_local] staged {src} → {dst_repo_rel}")
+                print(f"[stage→repo] {src}  →  {dst_repo_rel}")
 
     if not out:
-        raise RuntimeError(f"No files found under {local_repo}/{{src,tests,meta}}")
+        raise RuntimeError(f"No files found under {stage_root}/{{src,tests,meta}}")
 
     return out
+
+
 
 # ---------------------------------------------------------------------------
 # Orchestration
