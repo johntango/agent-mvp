@@ -1,14 +1,17 @@
 # Agent-MVP (Faust/Redpanda + OpenAI Agents + Flask UI)
 
-link to https://docs.google.com/document/d/1q3a472cCyPQLtxxhxXWPkCHUrTHQ31YcaKtW77orbfs/edit?usp=sharing 
+the src is in autoGenCode/generated but not tests and meta
+in generated local meta, and tests are good but src is empty
+Mismatch between local and github local repo
+
+link to https://docs.google.com/document/d/1q3a472cCyPQLtxxhxXWPkCHUrTHQ31YcaKtW77orbfs/edit?usp=sharing
 
 A minimal yet extensible multi-agent system that accepts natural-language software tasks, executes a four-stage pipeline (Design → Implement → Test → Review), persists artifacts, and exposes a small Bootstrap UI for enqueuing tasks, inspecting reports, and replaying individual agent steps.
 
 This README documents architecture, data flow, configuration, operation, and troubleshooting.
 
-Our code is refered to as Generator Code. The code it generates is the Target Code.  Within our "local" CodeSpace directory with create a Clone of the Target Github Repo (autoCodeGen) 
-The Generator Code creates code under ./data/<TaskID>. We take the present latest <TaskID> files and move them into autoCodeGen and do a git add .  and a git commit and finally a git push 
-
+Our code is refered to as Generator Code. The code it generates is the Target Code. Within our "local" CodeSpace directory with create a Clone of the Target Github Repo (autoCodeGen)
+The Generator Code creates code under ./data/<TaskID>. We take the present latest <TaskID> files and move them into autoCodeGen and do a git add . and a git commit and finally a git push
 
 Note on naming:
 The first pipeline step is internally called design@v1 but is implemented by the make_architect_agent() factory function.
@@ -19,34 +22,41 @@ We use “agent” in two senses. LLM agents (Designer/Implementer/Tester/Review
 
 Planning & Steps
 The planner (LLM) converts the initial prompt into a validated plan (a DAG) of step IDs (e.g., design@v1, implement@v1, test@v1, review@v1). The plan is persisted in SQLite (plans, steps, step_deps). The orchestrator promotes any queued steps whose dependencies are satisfied. This separates decision-making (LLM) from execution (Faust + SQLite), improving reliability and auditability.
-----
+
+---
 
 # 0) Start Redpanda (as you already do)
+
 docker rm -f redpanda 2>/dev/null || true
 docker run -d --name=redpanda \
-  -p 9092:9092 -p 9644:9644 \
-  redpandadata/redpanda:v24.3.18 \
-  redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M \
-  --node-id 0 --check=false \
-  --kafka-addr PLAINTEXT://0.0.0.0:9092 \
-  --advertise-kafka-addr PLAINTEXT://127.0.0.1:9092
+ -p 9092:9092 -p 9644:9644 \
+ redpandadata/redpanda:v24.3.18 \
+ redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M \
+ --node-id 0 --check=false \
+ --kafka-addr PLAINTEXT://0.0.0.0:9092 \
+ --advertise-kafka-addr PLAINTEXT://127.0.0.1:9092
 
 # 1) Start services (each in its own terminal from repo root)
+
 export REDPANDA_BROKERS=127.0.0.1:9092
 export DATA_DIR=./data
 make planner
 make worker
 make orchestrator
-make web    # open http://localhost:5000
-make publish 
-	$(PYTHON) scripts/publish_task.py --task-id "$(TID)"
+make web # open http://localhost:5000
+make publish
+$(PYTHON) scripts/publish_task.py --task-id "$(TID)"
+
 # 2) Enqueue a task
+
 make send TEXT="Write a tiny Python program that prints 'Hello Earthling'"
 
 # 1) Generate tests for task abc123 from shared story login_v1
+
 python -m app.scripts.test_generator --task abc123 --story login_v1
 
 # Promote (task outputs + publish the story into repo meta) and open a PR
+
 python - <<'PY'
 from app.gitflow.promote import promote_to_repo, commit_push_open_pr
 promote_to_repo("TASK-123", publish_story=True)
@@ -54,37 +64,42 @@ commit_push_open_pr("TASK-123")
 PY
 
 # 3) Inspect artifacts
-tail -n 50 ./data/reports.jsonl     # (planner writes 'received'; orchestrator writes 'done' on completion)
-ls -la ./data/<task_id>             # design@v1.json, implement@v1.json, test@v1.json, review@v1.json
+
+tail -n 50 ./data/reports.jsonl # (planner writes 'received'; orchestrator writes 'done' on completion)
+ls -la ./data/<task_id> # design@v1.json, implement@v1.json, test@v1.json, review@v1.json
 sqlite3 ./data/state.sqlite '.schema' '.tables'
+
 ---
+
 /workspaces/agent-mvp
 ├─ app/
-│  │  └─ test_generator.py         # Reads story from meta/stories/<id>/story.json, writes tests + story_ref.json
-│  ├─ gitflow/
-│  │  └─ promote.py                # Mirrors /generated/<taskId> → repo; publishes stories → repo generated/meta/stories
-│  ├─ config.py                    # Defines LOCAL_STORY_ROOT, LOCAL_GENERATED_ROOT, LOCAL_REPO_PATH, REPO_* dirs
-│  └─ cli.py (optional)            # Thin CLI wrappers: gen-tests, promote
+│ │ └─ test*generator.py # Reads story from meta/stories/<id>/story.json, writes tests + story_ref.json
+│ ├─ gitflow/
+│ │ └─ promote.py # Mirrors /generated/<taskId> → repo; publishes stories → repo generated/meta/stories
+│ ├─ config.py # Defines LOCAL_STORY_ROOT, LOCAL_GENERATED_ROOT, LOCAL_REPO_PATH, REPO*\* dirs
+│ └─ cli.py (optional) # Thin CLI wrappers: gen-tests, promote
 ├─ meta/
-│  └─ stories/
-│     └─ <story_id>/
-│        └─ story.json             # Single source of truth (workspace registry)
+│ └─ stories/
+│ └─ <story_id>/
+│ └─ story.json # Single source of truth (workspace registry)
 ├─ generated/
-│  └─ <taskId>/
-│     ├─ tests/
-│     │  └─ test_story.py          # LLM-produced pytest
-│     └─ meta/
-│        └─ story_ref.json         # Pointer: {story_id, sha256, timestamp}
-└─ autoGenCode/                    # Local clone of johntango/autoGenCode
-   └─ generated/
-      ├─ <taskId>/                 # Mirrored task artifacts (src/tests/meta)
-      │  ├─ tests/…
-      │  └─ meta/…
-      └─ meta/
-         └─ stories/
-            └─ <story_id>/
-               └─ story.json       # Published story that gets committed/pushed
+│ └─ <taskId>/
+│ ├─ tests/
+│ │ └─ test_story.py # LLM-produced pytest
+│ └─ meta/
+│ └─ story_ref.json # Pointer: {story_id, sha256, timestamp}
+└─ autoGenCode/ # Local clone of johntango/autoGenCode
+└─ generated/
+├─ <taskId>/ # Mirrored task artifacts (src/tests/meta)
+│ ├─ tests/…
+│ └─ meta/…
+└─ meta/
+└─ stories/
+└─ <story_id>/
+└─ story.json # Published story that gets committed/pushed
+
 ## 1. Architecture
+
 | Topic (env var)                             | Purpose                                           | Producers (write)                                                                               | Consumers (subscribe)                                                |
 | ------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | **`agent_tasks`** (`TASK_TOPIC`)            | New tasks & replay commands                       | `scripts/enqueue_async.py` (UI + CLI), `scripts/replay_async.py`                                | **Planner** (`app/planner_service.py`)                               |
