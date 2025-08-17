@@ -14,7 +14,18 @@ from app.config import load_config
 
 def _stories_dir(cfg: Dict[str, Any]) -> Path:
     return Path(cfg["LOCAL_STORY_ROOT"])  # "/workspaces/agent-mvp/meta/stories"
+def _strip_code_fences(s: str) -> str:
+    s = s.strip()
+    # ```python\n...\n```  or ```\n...\n```
+    m = re.match(r"^```(?:[Pp]ython)?\s*(.*?)\s*```$", s, re.S)
+    return m.group(1) if m else s
 
+# …after the chat completion:
+code = (resp.choices[0].message.content or "").strip()
+code = _strip_code_fences(code)
+if not code.strip():
+    raise RuntimeError("LLM returned empty test content")
+(test_dir / "test_story.py").write_text(code, encoding="utf-8")
 
 def _discover_single_story(stories_root: Path) -> Path:
     """If exactly one *.json exists in meta/stories, return it; else raise."""
