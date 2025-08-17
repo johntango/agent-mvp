@@ -3,29 +3,29 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Dict, Any
 
 from openai import OpenAI
 from app.config import load_config
 
 
 def _stories_dir(cfg: Dict[str, Any]) -> Path:
-    return Path(cfg["LOCAL_STORY_ROOT"])  # "/workspaces/agent-mvp/meta/stories"
+    return Path(cfg["LOCAL_STORY_ROOT"])  # e.g., "/workspaces/agent-mvp/meta/stories"
+
+
 def _strip_code_fences(s: str) -> str:
+    """
+    Accepts Markdown-fenced code and returns the inner code.
+    Handles ```python ... ``` and ``` ... ```. Otherwise returns s unchanged.
+    """
     s = s.strip()
-    # ```python\n...\n```  or ```\n...\n```
     m = re.match(r"^```(?:[Pp]ython)?\s*(.*?)\s*```$", s, re.S)
     return m.group(1) if m else s
 
-# …after the chat completion:
-code = (resp.choices[0].message.content or "").strip()
-code = _strip_code_fences(code)
-if not code.strip():
-    raise RuntimeError("LLM returned empty test content")
-(test_dir / "test_story.py").write_text(code, encoding="utf-8")
 
 def _discover_single_story(stories_root: Path) -> Path:
     """If exactly one *.json exists in meta/stories, return it; else raise."""
@@ -54,19 +54,27 @@ def _write_story_ref(meta_dir: Path, story_path: Path, story_obj: dict) -> Path:
     meta_dir.mkdir(parents=True, exist_ok=True)
     ref = {
         "story_file": story_path.name,
-        "story_sha256": sha256(json.dumps(story_obj, sort_keys=True, separators=(',', ':')).encode("utf-8")).hexdigest(),
+        "story_sha256": sha256(
+            json.dumps(story_obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
         "written_at_utc": datetime.now(tz=timezone.utc).isoformat(),
-        "note": "Pointer only; full story lives under meta/stories/<filename>.json and is published to repo generated/meta/stories/",
+        "note": (
+            "Pointer only; full story lives under meta/stories/<filename>.json and is "
+            "published to repo generated/meta/stories/"
+        ),
     }
     out = meta_dir / "story_ref.json"
     out.write_text(json.dumps(ref, indent=2), encoding="utf-8")
     return out
 
 
-def generate_tests_from_story(task_id: str, story_file: Optional[str] = None, model: Optional[str] = None) -> List[Path]:
+def generate_tests_from_story(
+    task_id: str, story_file: Optional[str] = None, model: Optional[str] = None
+) -> List[Path]:
     """
     Reads a STORY JSON file directly from meta/stories/*.json (no storyId).
     Writes pytest tests under generated/<taskId>/tests and a meta/story_ref.json.
+    Returns the list of written test file paths.
     """
     cfg = load_config()
     model = model or os.getenv("TEST_GEN_MODEL", "gpt-4o-mini")
@@ -110,16 +118,28 @@ Emit runnable pytest tests only (Python 3.11), no prose."""
         ],
         temperature=0.2,
     )
-    code = (resp.choices[0].message.content or "").strip()
+
+    text = (resp.choices[0].message.content or "").strip()
+    code = _strip_code_fences(text)
+    if not code.strip():
+        raise RuntimeError("LLM returned empty test content")
+
     out = tests_dir / "test_story.py"
     out.write_text(code, encoding="utf-8")
     return [out]
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Generate pytest files from a story file under meta/stories.")
+    ap = argparse.ArgumentParser(
+        description="Generate pytest files from a story file under meta/stories."
+    )
     ap.add_argument("--task", required=True, help="task identifier")
-    ap.add_argument("--story-file", default=None, help="filename under meta/stories (e.g., login.json). If omitted and exactly one story exists, that one is used.")
+    ap.add_argument(
+        "--story-file",
+        default=None,
+        help="filename under meta/stories (e.g., login.json). If omitted and exactly one story exists, that one is used.",
+    )
     ap.add_argument("--model", default=None)
     a = ap.parse_args()
     generate_tests_from_story(a.task, a.story_file, a.model)
+

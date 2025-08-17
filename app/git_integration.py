@@ -5,10 +5,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import fnmatch
-
+import base64
 import requests  # pip install requests
 from app.config import load_config
-
 
 # ---------------------------------------------------------------------------
 # Allow-list: only code, tests, and minimal meta get committed
@@ -45,8 +44,7 @@ def _files_from_impl_payload(impl: Dict[str, Any], design: Dict[str, Any]) -> Li
     elif isinstance(impl.get("artifacts"), dict):
         for pth, code in impl["artifacts"].items():
             files.append({"path": str(pth), "content": str(code)})
-
-    # Fallback: code_snippets → single file. Use design.files_touched[0] if provided.
+    # Fallback: code_snippets → single src file; use design.files_touched[0] if present
     if not files:
         snippets = impl.get("code_snippets")
         if isinstance(snippets, list) and snippets:
@@ -56,56 +54,49 @@ def _files_from_impl_payload(impl: Dict[str, Any], design: Dict[str, Any]) -> Li
                 fname = str(ft[0])
             if not fname:
                 fname = "src/main.py"
-            # Force into src/
             p = Path(fname)
             if not p.parts or p.parts[0] != "src":
                 p = Path("src") / p.name
             if p.suffix == "":
                 p = p.with_suffix(".py")
             files.append({"path": str(p), "content": "\n".join(snippets).rstrip() + "\n"})
-
     return files
 
 def _files_from_tests_payload(tests: Dict[str, Any]) -> List[Dict[str, str]]:
     files: List[Dict[str, str]] = []
-    # Accept tests.files or tests.test_files
     for key in ("files", "test_files"):
         arr = tests.get(key)
         if isinstance(arr, list):
             for it in arr:
                 if isinstance(it, dict) and "path" in it and "content" in it:
                     files.append({"path": str(it["path"]), "content": it["content"]})
-    # Accept tests.code_blocks in strict <path: …> format (optional)
     cb = tests.get("code_blocks")
-    if isinstance(cb, str) and "<path:" in cb:
-        files.extend(_parse_blocks_strict(cb))  # reuse if you already have a parser; else omit
+    # If you support <path: ...> blocks, parse here (optional)
     return files
 
 def _files_from_local_staging(task_id: str, cfg: Dict[str, Any]) -> List[Dict[str, str]]:
     """
-    Convert bucketed staging (src/tests/meta as Paths) into [{path, content}].
+    Convert everything under generated/<taskId> into [{path, content}].
+    Preserves top-level dir names (src/tests/meta). If your local dir is 'test'
+    (singular), it will be kept as 'test/' unless you normalize below.
     """
     files: List[Dict[str, str]] = []
     staging_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id
     if not staging_root.exists():
         return files
-    # Expect your existing prepare_files_from_local to return buckets; if not, just walk the tree.
-    try:
-        buckets = prepare_files_from_local(task_id)
-        iter_paths = []
-        for _, lst in (buckets or {}).items():
-            iter_paths.extend(lst or [])
-    except Exception:
-        iter_paths = list(staging_root.rglob("*"))
-    for p in iter_paths:
+    for p in staging_root.rglob("*"):
         p = Path(p)
         if not p.is_file():
             continue
-        rel = p.relative_to(staging_root)  # src/... or tests/... or meta/...
+        rel = p.relative_to(staging_root)  # e.g., src/…, tests/…, meta/…
         item = {"path": str(rel)}
         item.update(_text_or_base64_bytes(p))
         files.append(item)
     return files
+
+def _norm_key(path_str: str) -> str:
+    # Normalize for dedup (posix-style, case-sensitive; tweak if your FS differs)
+    return str(Path(path_str).as_posix())
 
 def _match_any(rel: Path) -> bool:
     s = str(rel).replace("\\", "/")
@@ -433,37 +424,36 @@ def prepare_files_from_local(task_id: str) -> List[Dict[str, str]]:
 # Orchestration
 # ---------------------------------------------------------------------------
 
+
 def prepare_repo_and_pr(
     task_id: str,
     design: Dict[str, Any],
     impl: Dict[str, Any],
-    tests: Dict[str, Any]
+    tests: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
     Full flow:
       - Ensure local clone (GIT_LOCAL_REPO_PATH) exists and points to GITHUB_REPO.
       - Checkout base and feature branches.
-      - Build file payloads (impl/tests, else LOCAL fallback).
-      - Write into local clone under generated/<taskId>/.
-      - Commit, push, and open PR.
+      - Build file payloads (impl/tests) AND merge with LOCAL staging.
+      - Write into local clone under generated/<taskId>/...
+      - Commit (if changes), push, and open PR.
     """
     cfg = load_config()
 
-    owner_repo = cfg["GITHUB_REPO"]                     # "owner/repo"
+    owner_repo = cfg["GITHUB_REPO"]                       # "owner/repo"
     token = cfg["GITHUB_TOKEN"]
     base = cfg["GIT_BASE"]
-    local_repo_path = cfg["LOCAL_REPO_PATH"]
-
-    remote_url = cfg["TARGET_REPO_URL"] or f"https://github.com/{owner_repo}.git"
-    auth_url = f"https://{token}@github.com/{owner_repo}.git"  # tokenized push URL
-
-    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()     # local clone folder
+    remote_url = cfg.get("TARGET_REPO_URL") or f"https://github.com/{owner_repo}.git"
+    auth_url = f"https://{token}@github.com/{owner_repo}.git"   # tokenized push URL
+    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()      # local clone folder
 
     print(f"[prepare] repo={owner_repo} local={repo_path} task={task_id} base={base}")
 
     if not owner_repo or not token:
         raise RuntimeError("GITHUB_REPO and GITHUB_TOKEN must be set")
 
+    # ---- ensure repo ready & branch selected ---------------------------------
     ensure_repo(repo_path, remote_url)
     ensure_remote(repo_path, auth_url)
     checkout_base(repo_path, base)
@@ -471,47 +461,95 @@ def prepare_repo_and_pr(
     branch = f"task/{task_id}"
     checkout_feature(repo_path, branch, base)
 
+    # ---- collect files: payload (impl/tests) + local staging -----------------
+    payload_files: List[Dict[str, str]] = []
+    payload_files += _files_from_impl_payload(impl or {}, design or {})
+    payload_files += _files_from_tests_payload(tests or {})
 
+    staged_files = _files_from_local_staging(task_id, cfg)
 
-    # Build file list: prefer explicit impl/tests, else read from LOCAL.
-    files: List[Dict[str, str]] = []
-    files += _files_from_impl_payload(impl or {}, design or {})
-    files += _files_from_tests_payload(tests or {})
+    # Merge with precedence: local staging wins on conflicts
+    merged: Dict[str, Dict[str, str]] = {}
+    for f in payload_files:
+        merged[_norm_key(f["path"])] = f
+    for f in staged_files:
+        merged[_norm_key(f["path"])] = f  # overwrite payload if same path
+
+    files: List[Dict[str, str]] = list(merged.values())
+
+    print(f"[prepare] files to write (payload+staging): {len(files)}")
+    for i, f in enumerate(files[:8]):
+        print(f"  [{i}] {f['path']} ({'b64' if 'encoding' in f else 'text'})")
 
     if not files:
-        files = _files_from_local_staging(task_id, cfg)
+        raise RuntimeError("No files found to write (payloads empty and local staging empty)")
 
-    print(f"[prepare] files to write: {len(files)}")
-    if not files:
-        raise RuntimeError("No files found to write (impl/tests empty and local staging has no files)")
-
-
-        # ⬇️ Rewrite all paths to be under generated/<taskId>
+    # ---- rewrite paths into repo tree and write safely -----------------------
+   
+    # --- Normalize & rewrite into repo under generated/<taskId>/... ---
     adjusted_files: List[Dict[str, str]] = []
     for f in files:
         orig_path = Path(f["path"])
+        # normalize singular 'test' → 'tests' so we don't create two trees
+        parts = list(orig_path.parts)
+        if parts and parts[0] == "test":
+            orig_path = Path("tests") / Path(*parts[1:])
         new_path = Path("generated") / task_id / orig_path
-        adjusted_files.append({"path": str(new_path), "content": f["content"], **({} if "encoding" not in f else {"encoding": f["encoding"]})})
+        item = {"path": str(new_path), "content": f["content"]}
+        if "encoding" in f:
+            item["encoding"] = f["encoding"]
+        adjusted_files.append(item)
         print(f"[prepare] staging {orig_path} → {new_path}")
 
+    # === NEW: hard-replace this task’s folder in the repo clone ===
+    task_root_rel = Path("generated") / task_id
+    task_root_abs = (repo_path / task_root_rel).resolve()
 
-    write_files(repo_path, adjusted_files)
+    # 1) Remove the folder from the working tree to drop stale files (if present)
+    if task_root_abs.exists():
+        print(f"[prepare] removing existing repo dir {task_root_rel} to avoid stale files")
+        shutil.rmtree(task_root_abs, ignore_errors=True)
 
+    # 2) Stage deletion in git index (won’t error if nothing tracked)
+    _run(["git", "rm", "-r", "--ignore-unmatch", str(task_root_rel)], cwd=repo_path)
+
+    # 3) Write the new files
+    for f in adjusted_files:
+        dest = (repo_path / f["path"]).resolve()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if f.get("encoding") == "base64":
+            dest.write_bytes(base64.b64decode(f["content"]))
+        else:
+            dest.write_text(f["content"], encoding="utf-8")
+
+    # 4) Stage additions/changes
+    _run(["git", "add", "-A"], cwd=repo_path)
+    # Optional: attempt repo-side test generation (best effort)
     try:
         from app.repo_test_generator import generate_repo_tests_from_story
         generated = generate_repo_tests_from_story(task_id)
         for p in generated:
             print(f"[prepare] added generated test: {p}")
     except FileNotFoundError:
-        # No story present -> skip silently
         print(f"[prepare] story.json not found for task {task_id}; skipping test generation")
     except Exception as e:
-        # Do not abort PR creation; surface message and continue
         print(f"[prepare] test generation failed: {e}")
 
-    # Quick visibility before committing
+    # ---- commit, push, PR ----------------------------------------------------
     code, out, err = _run("git status --porcelain", cwd=repo_path)
     print("[git status]", out or "(clean)")
+
+    if not out.strip():
+        # Nothing new to commit (idempotent runs)
+        print("[prepare] no changes detected; skipping commit/push/PR")
+        head_sha = _run("git rev-parse HEAD", cwd=repo_path)[1].strip() if _run("git rev-parse HEAD", cwd=repo_path)[0] == 0 else ""
+        return {
+            "repo": owner_repo,
+            "pr_url": None,
+            "pr_number": None,
+            "head_sha": head_sha,
+            "head_ref": branch,
+        }
 
     ensure_actions_workflow(repo_path)
     commit_all(repo_path, f"Task {task_id}: implement + tests\n\n{design.get('design_summary','')}")

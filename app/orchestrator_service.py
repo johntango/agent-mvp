@@ -8,7 +8,7 @@ from app.test_generator import generate_tests_from_story
 import hashlib
 from app.gitflow.materialize_impl import materialize_impl_to_staging 
 from app.gitflow.materialize_tests import ensure_tests_for_task
-from app.gitflow.prune_generated import main as prune_main
+from app.gitflow.prune_generated import run_prune
 
 cfg = load_config()
 logger = logging.getLogger("agent-mvp.orchestrator")
@@ -211,8 +211,11 @@ async def orchestrator(stream):
             await _maybe_publish(tid)
            
             # Example: keep newest 1 per story, prune both local & repo without a PR (or set --open-pr)
-            sys.argv = ["prune-generated", "--keep-per-story", "2"]
-            prune_main()
+          
+
+            # keep the most recent 2 tasks per story; prune both local staging and repo; no PR
+       
+            run_prune(keep_per_story=2, scope="both", open_pr=False, dry_run=False)
         else:
             if attempt < cfg["MAX_ATTEMPTS"]:
                 backoff_s = int([int(x) for x in cfg["BACKOFF_S"].split(",") if x.strip()][min(attempt-1, len(cfg["BACKOFF_S"].split(","))-1)])
