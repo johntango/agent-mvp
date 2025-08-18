@@ -106,12 +106,22 @@ def _match_any(rel: Path) -> bool:
 # Subprocess helpers
 # ---------------------------------------------------------------------------
 
-def _run(cmd: str, cwd: Path, env: Optional[dict] = None) -> Tuple[int, str, str]:
+def _run(cmd: str | List[str], cwd: Path, env: Optional[dict] = None) -> Tuple[int, str, str]:
+    """
+    Run a command in 'cwd'. Accepts either a shell-style string or a list of args.
+    Returns (exit_code, stdout, stderr) with stdout/stderr stripped.
+    """
     e = os.environ.copy()
     if env:
         e.update(env)
+
+    if isinstance(cmd, list):
+        args = [str(x) for x in cmd]     # pass through directly
+    else:
+        args = shlex.split(cmd)          # parse string into argv
+
     p = subprocess.Popen(
-        shlex.split(cmd),
+        args,
         cwd=str(cwd),
         env=e,
         stdout=subprocess.PIPE,
@@ -440,7 +450,8 @@ def prepare_repo_and_pr(
       - Commit (if changes), push, and open PR.
     """
     cfg = load_config()
-
+    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()
+    repo_generated_dir = Path(cfg.get("REPO_GENERATED_DIR") or "generated")   # <-- use config
     owner_repo = cfg["GITHUB_REPO"]                       # "owner/repo"
     token = cfg["GITHUB_TOKEN"]
     base = cfg["GIT_BASE"]
@@ -465,36 +476,32 @@ def prepare_repo_and_pr(
     payload_files: List[Dict[str, str]] = []
     payload_files += _files_from_impl_payload(impl or {}, design or {})
     payload_files += _files_from_tests_payload(tests or {})
-
     staged_files = _files_from_local_staging(task_id, cfg)
+
 
     # Merge with precedence: local staging wins on conflicts
     merged: Dict[str, Dict[str, str]] = {}
     for f in payload_files:
         merged[_norm_key(f["path"])] = f
     for f in staged_files:
-        merged[_norm_key(f["path"])] = f  # overwrite payload if same path
+        merged[_norm_key(f["path"])] = f
 
     files: List[Dict[str, str]] = list(merged.values())
-
     print(f"[prepare] files to write (payload+staging): {len(files)}")
     for i, f in enumerate(files[:8]):
         print(f"  [{i}] {f['path']} ({'b64' if 'encoding' in f else 'text'})")
 
     if not files:
         raise RuntimeError("No files found to write (payloads empty and local staging empty)")
-
-    # ---- rewrite paths into repo tree and write safely -----------------------
    
     # --- Normalize & rewrite into repo under generated/<taskId>/... ---
     adjusted_files: List[Dict[str, str]] = []
     for f in files:
         orig_path = Path(f["path"])
-        # normalize singular 'test' → 'tests' so we don't create two trees
         parts = list(orig_path.parts)
-        if parts and parts[0] == "test":
+        if parts and parts[0] == "test":  # normalize singular → plural
             orig_path = Path("tests") / Path(*parts[1:])
-        new_path = Path("generated") / task_id / orig_path
+        new_path = repo_generated_dir / task_id / orig_path
         item = {"path": str(new_path), "content": f["content"]}
         if "encoding" in f:
             item["encoding"] = f["encoding"]
@@ -502,8 +509,12 @@ def prepare_repo_and_pr(
         print(f"[prepare] staging {orig_path} → {new_path}")
 
     # === NEW: hard-replace this task’s folder in the repo clone ===
-    task_root_rel = Path("generated") / task_id
+    task_root_rel = repo_generated_dir / task_id
     task_root_abs = (repo_path / task_root_rel).resolve()
+    if task_root_abs.exists():
+        print(f"[prepare] removing existing repo dir {task_root_rel} to avoid stale files")
+        shutil.rmtree(task_root_abs, ignore_errors=True)
+    _run(["git", "rm", "-r", "--ignore-unmatch", str(task_root_rel)], cwd=repo_path)
 
     # 1) Remove the folder from the working tree to drop stale files (if present)
     if task_root_abs.exists():
@@ -513,17 +524,44 @@ def prepare_repo_and_pr(
     # 2) Stage deletion in git index (won’t error if nothing tracked)
     _run(["git", "rm", "-r", "--ignore-unmatch", str(task_root_rel)], cwd=repo_path)
 
-    # 3) Write the new files
+
+    # --- write new files into the repo clone ---
     for f in adjusted_files:
         dest = (repo_path / f["path"]).resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
         if f.get("encoding") == "base64":
+            import base64
             dest.write_bytes(base64.b64decode(f["content"]))
         else:
             dest.write_text(f["content"], encoding="utf-8")
 
-    # 4) Stage additions/changes
+    # --- also backfill local staging src/ if empty (keeps staging/repo consistent) ---
+    stage_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id
+    stage_src  = stage_root / "src"
+    if not stage_src.exists() or not any(stage_src.rglob("*.py")):
+        wrote = 0
+        for f in adjusted_files:
+            p = Path(f["path"])
+            # only mirror files under .../<taskId>/src/...
+            try:
+                # repo path is <repo_generated_dir>/<taskId>/<rel>
+                rel_after_task = p.relative_to(repo_generated_dir / task_id)
+            except ValueError:
+                continue
+            if rel_after_task.parts and rel_after_task.parts[0] == "src":
+                dest = stage_root / rel_after_task
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if f.get("encoding") == "base64":
+                    import base64
+                    dest.write_bytes(base64.b64decode(f["content"]))
+                else:
+                    dest.write_text(f["content"], encoding="utf-8")
+                wrote += 1
+        print(f"[prepare] backfilled {wrote} src file(s) into local staging at {stage_src}")
+
+    # stage additions/changes in repo
     _run(["git", "add", "-A"], cwd=repo_path)
+
     # Optional: attempt repo-side test generation (best effort)
     try:
         from app.repo_test_generator import generate_repo_tests_from_story

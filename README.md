@@ -50,6 +50,7 @@ $(PYTHON) scripts/publish_task.py --task-id "$(TID)"
 # 2) Enqueue a task
 
 make send TEXT="Write a tiny Python program that prints 'Hello Earthling'"
+make send TEXT="Write a python program to calculate the shipping cost of a package based on its weight"
 
 # 1) Generate tests for task abc123 from shared story login_v1
 

@@ -59,10 +59,9 @@ def load_config() -> Dict:
 
         # LOCAL (non-git) paths
         "APP_DATA_DIR": str(APP_DATA_DIR),
-        "LOCAL_GENERATED_ROOT": str(LOCAL_GENERATED_ROOT),  # e.g. /workspaces/agent-mvp/generated
+        "LOCAL_GENERATED_ROOT":  "/workspaces/agent-mvp/generated",  # e.g. /workspaces/agent-mvp/generated
         "LOCAL_STORY_ROOT": "/workspaces/agent-mvp/meta/stories",
         "REPO_META_STORIES_DIR": "generated/meta/stories",
-
 
 
 
@@ -77,7 +76,7 @@ def load_config() -> Dict:
         # GitHub / git
         "GITHUB_REPO": os.getenv("GITHUB_REPO", "johntango/autoGenCode"),
         "TARGET_REPO_URL": os.getenv("TARGET_REPO_URL", "https://github.com/johntango/autoGenCode.git"),
-        "GIT_LOCAL_REPO_PATH": str(GIT_LOCAL_REPO_PATH),  # e.g. /workspaces/agent-mvp/autoGenCode
+        "GIT_LOCAL_REPO_PATH": "/workspaces/agent-mvp/autoGenCode",  # e.g. /workspaces/agent-mvp/autoGenCode
         "REPO_GENERATED_DIR": os.getenv("REPO_GENERATED_DIR", "generated"),  # path inside the repo clone
         "GIT_BASE": os.getenv("GIT_BASE", "main"),
 
