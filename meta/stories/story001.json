@@ -1,19 +1,8 @@
 {
-  "feature": "Shipping cost calculation",
-  "module": "shipping",
-  "factors": "shipping_cost = base cost + weight * rate",
-  "function": "calculate_shipping",
-  "cases": [
-    {
-      "name": "domestic_standard",
-      "inputs": {  "weight_kg": 2.0 },
-      "expect": { "equals": "6.00" }
-    },
-   
-    {
-      "name": "invalid_weight",
-      "inputs": { "weight_kg": 0.0 },
-      "expect": { "raises": "InvalidWeight" }
-    }
-  ]
+  "id": "shipping_cost_v1",
+  "version": "1.1",
+  "feature": "Compute shipping cost for a parcel as a linear function of weight.\n\nModule path: src/shipping_cost.py\nPublic API:  calculate_shipping_cost(weight_kg) -> Decimal (quantized to 2 dp)\n\nDefinition:\n  cost(weight_kg) = round_2( BASE_COST + WEIGHT_FACTOR * round_3(weight_kg) )\n  where:\n    BASE_COST     = 3.50  (USD)\n    WEIGHT_FACTOR = 1.20  (USD/kg)\n    round_3(x)    = Decimal, rounded to 3 decimal places, ROUND_HALF_UP\n    round_2(x)    = Decimal, rounded to 2 decimal places, ROUND_HALF_UP\n",
+  "requirements": "- The function MUST accept weight in kilograms as a numeric (int/float/Decimal).\n- The function MUST first round the input weight to 3 decimal places (ROUND_HALF_UP).\n- Compute cost := BASE_COST + WEIGHT_FACTOR * rounded_weight.\n- The returned value MUST be a Decimal quantized to 2 decimal places using ROUND_HALF_UP.\n- Valid domain: 0.000 kg ≤ weight ≤ 200.000 kg after 3-decimal rounding.\n- Error handling:\n  - If weight < 0 after rounding → raise ValueError(\"NEGATIVE_WEIGHT\").\n  - If weight > 200 after rounding → raise ValueError(\"WEIGHT_TOO_LARGE\").\n  - If input is not numeric → raise TypeError(\"NON_NUMERIC_WEIGHT\").\n- The module file MUST be named src/shipping_cost.py and expose calculate_shipping_cost.\n",
+  "acceptance": "The following input→output pairs MUST hold (values in USD):\n\n# Exact values (ROUND_HALF_UP on final cost to 2 dp)\n- weight=0            → cost=3.50\n- weight=0.5          → cost=4.10   (3.50 + 0.5×1.20 = 4.10)\n- weight=1            → cost=4.70   (3.50 + 1×1.20 = 4.70)\n- weight=1.25         → cost=5.00   (3.50 + 1.25×1.20 = 5.00)\n- weight=5            → cost=9.50\n- weight=10           → cost=15.50\n- weight=20           → cost=27.50\n- weight=50           → cost=63.50\n\n# Rounding around very small weights (3dp then 2dp)\n- weight=0.004  → round_3=0.004 → cost=3.50\n- weight=0.005  → round_3=0.005 → 3.50 + 0.005×1.20 = 3.506 → round_2=3.51\n\n# Boundary behavior near 2.5 kg (for regression around rounding edges)\n- weight=2.499 → cost=6.50\n- weight=2.500 → cost=6.50\n- weight=2.504 → cost=6.50\n- weight=2.505 → cost=6.51\n\n# Domain limits\n- weight=0      → 3.50 (valid)\n- weight=200    → 243.50 (valid)\n- weight=200.001 (→ round_3=200.001) → raises ValueError(\"WEIGHT_TOO_LARGE\")\n\n# Invalid inputs\n- weight=-0.001 (→ round_3=-0.001)   → raises ValueError(\"NEGATIVE_WEIGHT\")\n- weight=\"1.0\"  (non-numeric string) → raises TypeError(\"NON_NUMERIC_WEIGHT\")\n",
+  "constraints": "- Use Python 3.11+.\n- Use Decimal for all monetary arithmetic and rounding (ROUND_HALF_UP).\n- No network or file I/O in the function. Pure computation.\n- Keep function deterministic; no randomness or time dependence.\n"
 }
