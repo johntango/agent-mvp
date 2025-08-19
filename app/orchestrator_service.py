@@ -9,6 +9,7 @@ import hashlib
 from app.gitflow.materialize_impl import materialize_impl_to_staging 
 from app.gitflow.materialize_tests import ensure_tests_for_task
 from app.gitflow.prune_generated import run_prune
+from app.gitflow.closed_loop import run_ci_closed_loop
 
 cfg = load_config()
 logger = logging.getLogger("agent-mvp.orchestrator")
@@ -163,6 +164,17 @@ async def _maybe_publish(tid: str) -> None:
             print(f"Preparing PR for task {tid} with design={design}, impl={impl}, tests={tests}")
             print(f"Preparing PR for task {tid} with calling prepare_repo_and_pr")
             pr_info = prepare_repo_and_pr(tid, design, impl, tests)
+            try:
+                # Run at most 1 fix round (tune as needed)
+                loop = asyncio.get_running_loop()
+                res = await loop.run_in_executor(
+                    None,  # default executor
+                    run_ci_closed_loop, tid, pr_info, design, impl
+                )
+                _append_report({"task_id": tid, "status": "ci_closed_loop", "summary": json.dumps(res)})
+            except Exception as e:
+                _append_report({"task_id": tid, "status": "warn", "summary": f"CI closed loop skipped: {e}"})
+
             pr_url = pr_info.get("pr_url")
             _append_report({"task_id": tid, "status": "pr_opened", "summary": f"PR: {pr_url}"})
             await report_topic.send(key=tid.encode(), value=make_report(tid, "pr", f"Opened PR: {pr_url}"))
