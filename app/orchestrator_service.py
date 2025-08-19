@@ -10,6 +10,8 @@ from app.gitflow.materialize_impl import materialize_impl_to_staging
 from app.gitflow.materialize_tests import ensure_tests_for_task
 from app.gitflow.prune_generated import run_prune
 from app.gitflow.closed_loop import run_ci_closed_loop
+from app.git_integration import is_pr_merged, delete_remote_branch
+from app.design_from_story import generate_design_from_story
 
 cfg = load_config()
 logger = logging.getLogger("agent-mvp.orchestrator")
@@ -107,7 +109,9 @@ def _ensure_stage_exists_for_task(tid: str) -> None:
         raise RuntimeError(f"Cannot infer story file for task {tid}; ensure meta/stories contains a single story or generate with --story-file.")
 
     generate_tests_from_story(task_id=tid, story_file=story_file)
-
+    design_obj = generate_design_from_story(tid)
+    _append_report({"task_id": tid, "status": "design_seeded",
+                "summary": f"Design generated from story; files_touched={design_obj.get('files_touched', [])}"})
 
 @app.timer(interval=STORY_POLL_S)
 async def story_watcher() -> None:
@@ -172,6 +176,13 @@ async def _maybe_publish(tid: str) -> None:
                     run_ci_closed_loop, tid, pr_info, design, impl
                 )
                 _append_report({"task_id": tid, "status": "ci_closed_loop", "summary": json.dumps(res)})
+                if cfg.get("DELETE_REMOTE_BRANCH_ON_MERGE","1") == "1":
+                    try:
+                        if is_pr_merged(pr_info["repo"], pr_info["pr_number"], cfg["GITHUB_TOKEN"]):
+                            delete_remote_branch(pr_info["repo"], pr_info["head_ref"], cfg["GITHUB_TOKEN"])
+                            _append_report({"task_id": tid, "status": "branch_deleted", "summary": f"Deleted {pr_info['head_ref']}"})
+                    except Exception as e:
+                        _append_report({"task_id": tid, "status": "warn", "summary": f"Branch delete failed: {e}"})
             except Exception as e:
                 _append_report({"task_id": tid, "status": "warn", "summary": f"CI closed loop skipped: {e}"})
 
