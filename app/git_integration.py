@@ -3,15 +3,17 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
+import requests, json
 from typing import Any, Dict, List, Optional, Tuple
 import fnmatch
 import base64
 import requests  # pip install requests
 from app.config import load_config
-
+import re
 # ---------------------------------------------------------------------------
 # Allow-list: only code, tests, and minimal meta get committed
 # ---------------------------------------------------------------------------
+
 ALLOWED_GLOBS = [
     "src/**/*.py",
     "src/**/pyproject.toml",
@@ -19,10 +21,10 @@ ALLOWED_GLOBS = [
     "meta/MANIFEST.json",
     "meta/README.md",
     "meta/REPORT.md",
-    "meta/story.json",   # snapshot for auditability
+    "meta/story.json",            # full embedded story (single source of truth)
+    "meta/stories/*.json",        # optional extra: original filename snapshot
     "README.md",
 ]
-
 import base64
 from pathlib import Path
 from typing import Dict, Any, List
@@ -204,31 +206,54 @@ def checkout_base(target_path: Path, base_branch: str) -> None:
         code, out, err = _run(f"git checkout -B {shlex.quote(base_branch)}", cwd=target_path)
         _ensure_ok(code, out, err, "git checkout local base")
 
+# app/git_integration.py
 def checkout_feature(target_path: Path, branch: str, base: str) -> None:
     """
-    Create/reset the feature branch from origin/base (if exists) or local base; ensure HEAD is on branch.
+    Ensure we are on <branch>. If origin/<branch> exists, check out from it and
+    HARD-RESET local to origin/<branch> so subsequent pushes are fast-forward.
+    Otherwise create from origin/<base> (or local <base>) and set tracking.
     """
+    # Always fetch first
     code, out, err = _run("git fetch origin --prune", cwd=target_path)
     _ensure_ok(code, out, err, "git fetch")
 
-    code, out, err = _run(f"git rev-parse --verify origin/{shlex.quote(base)}", cwd=target_path)
+    # Does the remote feature branch exist?
+    code, _, _ = _run(f"git rev-parse --verify remotes/origin/{shlex.quote(branch)}", cwd=target_path)
     if code == 0:
+        # Start exactly from the remote branch tip and track it
         code, out, err = _run(
-            f"git checkout -B {shlex.quote(branch)} origin/{shlex.quote(base)}",
+            f"git checkout -B {shlex.quote(branch)} origin/{shlex.quote(branch)}",
             cwd=target_path,
         )
-        _ensure_ok(code, out, err, "git checkout feature from origin/base")
+        _ensure_ok(code, out, err, "git checkout origin/branch")
+        # Make local identical to remote (prevents non-FF pushes)
+        code, out, err = _run(f"git reset --hard origin/{shlex.quote(branch)}", cwd=target_path)
+        _ensure_ok(code, out, err, "git reset --hard origin/branch")
     else:
-        code, out, err = _run(
-            f"git checkout -B {shlex.quote(branch)} {shlex.quote(base)}",
-            cwd=target_path,
-        )
-        _ensure_ok(code, out, err, "git checkout feature from local base")
+        # Create feature from base
+        code2, _, _ = _run(f"git rev-parse --verify remotes/origin/{shlex.quote(base)}", cwd=target_path)
+        if code2 == 0:
+            code, out, err = _run(
+                f"git checkout -B {shlex.quote(branch)} origin/{shlex.quote(base)}",
+                cwd=target_path,
+            )
+            _ensure_ok(code, out, err, "git checkout feature from origin/base")
+        else:
+            code, out, err = _run(
+                f"git checkout -B {shlex.quote(branch)} {shlex.quote(base)}",
+                cwd=target_path,
+            )
+            _ensure_ok(code, out, err, "git checkout feature from local base")
 
+    # Set tracking to the remote branch (ok if remote doesn’t exist yet)
+    _run(f"git branch --set-upstream-to=origin/{shlex.quote(branch)} {shlex.quote(branch)}", cwd=target_path)
+
+    # Sanity: ensure we are on <branch>
     code, out, err = _run("git rev-parse --abbrev-ref HEAD", cwd=target_path)
     _ensure_ok(code, out, err, "git rev-parse HEAD")
     if out.strip() != branch:
         raise RuntimeError(f"Not on expected branch: got '{out.strip()}', wanted '{branch}'")
+
 
 # ---------------------------------------------------------------------------
 # File IO into the local clone
@@ -433,7 +458,41 @@ def prepare_files_from_local(task_id: str) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
+def _gh_api(method: str, endpoint: str, token: str, data=None, params=None):
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    r = requests.request(method, f"https://api.github.com{endpoint}", headers=headers, json=data, params=params, timeout=30)
+    r.raise_for_status()
+    return r.json() if (r.text or "").strip() else {}
 
+def delete_remote_branch(owner_repo: str, branch: str, token: str) -> None:
+    owner, repo = owner_repo.split("/", 1)
+    # Delete ref: heads/<branch>
+    _gh_api("DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}", token)
+
+def is_pr_merged(owner_repo: str, pr_number: int, token: str) -> bool:
+    owner, repo = owner_repo.split("/", 1)
+    try:
+        _gh_api("GET", f"/repos/{owner}/{repo}/pulls/{pr_number}/merge", token)
+        return True  # 204-equivalent; no JSON needed
+    except requests.HTTPError as e:
+        # 404 means not merged
+        return False
+
+def _story_slug_for_task(task_id: str, cfg: dict) -> str | None:
+    """
+    Try LOCAL_GENERATED_ROOT/<taskId>/meta/story_ref.json first, else None.
+    """
+    try:
+        meta = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id / "meta" / "story_ref.json"
+        if meta.exists():
+            j = json.loads(meta.read_text(encoding="utf-8"))
+            name = j.get("story_file") or ""
+            stem = Path(name).stem
+            slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", stem).strip("-")
+            return slug or None
+    except Exception:
+        pass
+    return None
 
 def prepare_repo_and_pr(
     task_id: str,
@@ -443,43 +502,48 @@ def prepare_repo_and_pr(
 ) -> Dict[str, Any]:
     """
     Full flow:
-      - Ensure local clone (GIT_LOCAL_REPO_PATH) exists and points to GITHUB_REPO.
-      - Checkout base and feature branches.
-      - Build file payloads (impl/tests) AND merge with LOCAL staging.
-      - Write into local clone under generated/<taskId>/...
+      - Ensure local clone exists and points to GITHUB_REPO.
+      - Checkout base and feature branches (branch strategy respected).
+      - Merge payload (impl/tests) with LOCAL staging (staging wins on conflict).
+      - Write into repo under <REPO_GENERATED_DIR>/<taskId>/...
       - Commit (if changes), push, and open PR.
     """
     cfg = load_config()
-    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()
-    repo_generated_dir = Path(cfg.get("REPO_GENERATED_DIR") or "generated")   # <-- use config
-    owner_repo = cfg["GITHUB_REPO"]                       # "owner/repo"
-    token = cfg["GITHUB_TOKEN"]
-    base = cfg["GIT_BASE"]
-    remote_url = cfg.get("TARGET_REPO_URL") or f"https://github.com/{owner_repo}.git"
-    auth_url = f"https://{token}@github.com/{owner_repo}.git"   # tokenized push URL
-    repo_path = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()      # local clone folder
+
+    owner_repo = cfg["GITHUB_REPO"]                     # "owner/repo"
+    token       = cfg["GITHUB_TOKEN"]
+    base        = cfg["GIT_BASE"]
+    repo_path   = Path(cfg["GIT_LOCAL_REPO_PATH"]).resolve()          # define FIRST
+    repo_generated_dir = Path(cfg.get("REPO_GENERATED_DIR") or "generated")
+    remote_url  = cfg.get("TARGET_REPO_URL") or f"https://github.com/{owner_repo}.git"
+    auth_url    = f"https://{token}@github.com/{owner_repo}.git"
 
     print(f"[prepare] repo={owner_repo} local={repo_path} task={task_id} base={base}")
 
     if not owner_repo or not token:
         raise RuntimeError("GITHUB_REPO and GITHUB_TOKEN must be set")
 
-    # ---- ensure repo ready & branch selected ---------------------------------
+    # Ensure repo and base branch
     ensure_repo(repo_path, remote_url)
     ensure_remote(repo_path, auth_url)
     checkout_base(repo_path, base)
 
-    branch = f"task/{task_id}"
+    # Choose branch according to strategy
+    strategy = (cfg.get("BRANCH_STRATEGY") or "per_story").lower()
+    if strategy == "per_story":
+        slug = _story_slug_for_task(task_id, cfg) or task_id
+        branch = f"story/{slug}"
+    else:
+        branch = f"task/{task_id}"
+
     checkout_feature(repo_path, branch, base)
 
-    # ---- collect files: payload (impl/tests) + local staging -----------------
+    # Collect files: payload (impl/tests) + local staging (staging wins)
     payload_files: List[Dict[str, str]] = []
     payload_files += _files_from_impl_payload(impl or {}, design or {})
     payload_files += _files_from_tests_payload(tests or {})
     staged_files = _files_from_local_staging(task_id, cfg)
 
-
-    # Merge with precedence: local staging wins on conflicts
     merged: Dict[str, Dict[str, str]] = {}
     for f in payload_files:
         merged[_norm_key(f["path"])] = f
@@ -493,13 +557,14 @@ def prepare_repo_and_pr(
 
     if not files:
         raise RuntimeError("No files found to write (payloads empty and local staging empty)")
-   
-    # --- Normalize & rewrite into repo under generated/<taskId>/... ---
+
+    # Rewrite paths into repo tree: <REPO_GENERATED_DIR>/<taskId>/<src|tests|meta>/...
     adjusted_files: List[Dict[str, str]] = []
     for f in files:
         orig_path = Path(f["path"])
         parts = list(orig_path.parts)
-        if parts and parts[0] == "test":  # normalize singular → plural
+        # normalize 'test' → 'tests' (avoid two trees)
+        if parts and parts[0] == "test":
             orig_path = Path("tests") / Path(*parts[1:])
         new_path = repo_generated_dir / task_id / orig_path
         item = {"path": str(new_path), "content": f["content"]}
@@ -508,7 +573,7 @@ def prepare_repo_and_pr(
         adjusted_files.append(item)
         print(f"[prepare] staging {orig_path} → {new_path}")
 
-    # === NEW: hard-replace this task’s folder in the repo clone ===
+    # Hard-replace this task’s folder in the repo clone to avoid stale files
     task_root_rel = repo_generated_dir / task_id
     task_root_abs = (repo_path / task_root_rel).resolve()
     if task_root_abs.exists():
@@ -516,35 +581,23 @@ def prepare_repo_and_pr(
         shutil.rmtree(task_root_abs, ignore_errors=True)
     _run(["git", "rm", "-r", "--ignore-unmatch", str(task_root_rel)], cwd=repo_path)
 
-    # 1) Remove the folder from the working tree to drop stale files (if present)
-    if task_root_abs.exists():
-        print(f"[prepare] removing existing repo dir {task_root_rel} to avoid stale files")
-        shutil.rmtree(task_root_abs, ignore_errors=True)
-
-    # 2) Stage deletion in git index (won’t error if nothing tracked)
-    _run(["git", "rm", "-r", "--ignore-unmatch", str(task_root_rel)], cwd=repo_path)
-
-
-    # --- write new files into the repo clone ---
+    # Write new files into the repo clone
     for f in adjusted_files:
         dest = (repo_path / f["path"]).resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
         if f.get("encoding") == "base64":
-            import base64
             dest.write_bytes(base64.b64decode(f["content"]))
         else:
             dest.write_text(f["content"], encoding="utf-8")
 
-    # --- also backfill local staging src/ if empty (keeps staging/repo consistent) ---
+    # Backfill local staging src/ if empty (keeps staging/repo consistent)
     stage_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id
     stage_src  = stage_root / "src"
     if not stage_src.exists() or not any(stage_src.rglob("*.py")):
         wrote = 0
         for f in adjusted_files:
             p = Path(f["path"])
-            # only mirror files under .../<taskId>/src/...
             try:
-                # repo path is <repo_generated_dir>/<taskId>/<rel>
                 rel_after_task = p.relative_to(repo_generated_dir / task_id)
             except ValueError:
                 continue
@@ -552,17 +605,16 @@ def prepare_repo_and_pr(
                 dest = stage_root / rel_after_task
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 if f.get("encoding") == "base64":
-                    import base64
                     dest.write_bytes(base64.b64decode(f["content"]))
                 else:
                     dest.write_text(f["content"], encoding="utf-8")
                 wrote += 1
         print(f"[prepare] backfilled {wrote} src file(s) into local staging at {stage_src}")
 
-    # stage additions/changes in repo
+    # Stage changes
     _run(["git", "add", "-A"], cwd=repo_path)
 
-    # Optional: attempt repo-side test generation (best effort)
+    # Optional: repo-side test generation (best effort)
     try:
         from app.repo_test_generator import generate_repo_tests_from_story
         generated = generate_repo_tests_from_story(task_id)
@@ -573,21 +625,13 @@ def prepare_repo_and_pr(
     except Exception as e:
         print(f"[prepare] test generation failed: {e}")
 
-    # ---- commit, push, PR ----------------------------------------------------
+    # Commit/push/PR
     code, out, err = _run("git status --porcelain", cwd=repo_path)
     print("[git status]", out or "(clean)")
-
     if not out.strip():
-        # Nothing new to commit (idempotent runs)
         print("[prepare] no changes detected; skipping commit/push/PR")
         head_sha = _run("git rev-parse HEAD", cwd=repo_path)[1].strip() if _run("git rev-parse HEAD", cwd=repo_path)[0] == 0 else ""
-        return {
-            "repo": owner_repo,
-            "pr_url": None,
-            "pr_number": None,
-            "head_sha": head_sha,
-            "head_ref": branch,
-        }
+        return {"repo": owner_repo, "pr_url": None, "pr_number": None, "head_sha": head_sha, "head_ref": branch}
 
     ensure_actions_workflow(repo_path)
     commit_all(repo_path, f"Task {task_id}: implement + tests\n\n{design.get('design_summary','')}")
@@ -612,3 +656,4 @@ def prepare_repo_and_pr(
         "head_sha": head_sha,
         "head_ref": branch,
     }
+

@@ -4,7 +4,7 @@ import json, textwrap, importlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
-
+import textwrap
 from app.config import load_config
 
 
@@ -87,9 +87,9 @@ def _render_pytest_module(story: StorySpec) -> str:
             f'("{c.name}", dict({_fmt_kwargs(c.inputs)}), {json.dumps(str(c.expect["equals"]))})'
             for c in equals_cases
         ]
-        parts.append(textwrap.dedent(f"""\
+        parts.append(textwrap.dedent(f"""
             @pytest.mark.parametrize("name,kwargs,expected_str", [
-                {",\n                ".join(rows)}
+                {", ".join(rows)}
             ])
             def test_{story.function}_equals(name, kwargs, expected_str):
                 out = {story.function}(**kwargs)
@@ -104,28 +104,34 @@ def _render_pytest_module(story: StorySpec) -> str:
             if "abs" in ap: args.append(f"abs={ap['abs']}")
             if "rel" in ap: args.append(f"rel={ap['rel']}")
             rows.append(f'("{c.name}", dict({_fmt_kwargs(c.inputs)}), pytest.approx({", ".join(args)}))')
-        parts.append(textwrap.dedent(f"""\
-            @pytest.mark.parametrize("name,kwargs,target", [
-                {",\n                ".join(rows)}
-            ])
-            def test_{story.function}_approx(name, kwargs, target):
-                out = {story.function}(**kwargs)
-                assert out == target
-        """))
+            rows_code = ",\n    ".join(rows)
+
+            parts.append(
+                textwrap.dedent(
+                    f"""
+                    @pytest.mark.parametrize("name,kwargs,target", [
+                        {rows_code}
+                    ])
+                    """
+                ).strip()
+            )
 
     if raises_cases:
         rows = [
             f'("{c.name}", dict({_fmt_kwargs(c.inputs)}), {c.expect["raises"]})'
             for c in raises_cases
         ]
-        parts.append(textwrap.dedent(f"""\
-            @pytest.mark.parametrize("name,kwargs,exc", [
-                {",\n                ".join(rows)}
-            ])
-            def test_{story.function}_raises(name, kwargs, exc):
-                with pytest.raises(exc):
-                    {story.function}(**kwargs)
-        """))
+        rows_code = ",\n    ".join(rows)
+
+        parts.append(
+            textwrap.dedent(
+                f"""
+                @pytest.mark.parametrize("name,kwargs,target", [
+                    {rows_code}
+                ])
+                """
+            ).strip()
+        )
 
     if not parts:
         parts.append(textwrap.dedent(f"""\

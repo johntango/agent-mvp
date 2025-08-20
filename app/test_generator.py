@@ -69,12 +69,17 @@ def _write_story_ref(meta_dir: Path, story_path: Path, story_obj: dict) -> Path:
 
 
 def generate_tests_from_story(
-    task_id: str, story_file: Optional[str] = None, model: Optional[str] = None
+    task_id: str,
+    story_file: Optional[str] = None,
+    model: Optional[str] = None
 ) -> List[Path]:
     """
-    Reads a STORY JSON file directly from meta/stories/*.json (no storyId).
-    Writes pytest tests under generated/<taskId>/tests and a meta/story_ref.json.
-    Returns the list of written test file paths.
+    Read a STORY JSON file from meta/stories/*.json (no storyId).
+    Write into local staging:
+      - generated/<taskId>/tests/test_story.py
+      - generated/<taskId>/meta/story.json        (full story)
+      - generated/<taskId>/meta/story_ref.json    (provenance pointer + hash)
+    Return: list of written test file paths.
     """
     cfg = load_config()
     model = model or os.getenv("TEST_GEN_MODEL", "gpt-4o-mini")
@@ -82,16 +87,19 @@ def generate_tests_from_story(
     story_path = _resolve_story_file(cfg, story_file)
     story = json.loads(story_path.read_text(encoding="utf-8"))
 
-    feature = story.get("feature", "unknown feature")
+    feature      = story.get("feature", "unknown feature")
     requirements = story.get("requirements", "")
-    acceptance = story.get("acceptance", "")
-    constraints = story.get("constraints", "")
+    acceptance   = story.get("acceptance", "")
+    constraints  = story.get("constraints", "")
 
     gen_root = Path(cfg["LOCAL_GENERATED_ROOT"]) / task_id
     tests_dir = gen_root / "tests"
-    meta_dir = gen_root / "meta"
+    meta_dir  = gen_root / "meta"
     tests_dir.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)  # <-- ensure meta/ exists
 
+    # Persist the complete story and the reference
+    (meta_dir / "story.json").write_text(json.dumps(story, indent=2), encoding="utf-8")
     _write_story_ref(meta_dir, story_path, story)
 
     prompt = f"""You are a precise pytest generator.
@@ -108,7 +116,6 @@ Non-functional Constraints:
 {constraints}
 
 Emit runnable pytest tests only (Python 3.11), no prose."""
-
     client = OpenAI()
     resp = client.chat.completions.create(
         model=model,
@@ -120,13 +127,14 @@ Emit runnable pytest tests only (Python 3.11), no prose."""
     )
 
     text = (resp.choices[0].message.content or "").strip()
-    code = _strip_code_fences(text)
-    if not code.strip():
+    code = _strip_code_fences(text).strip()
+    if not code:
         raise RuntimeError("LLM returned empty test content")
 
     out = tests_dir / "test_story.py"
     out.write_text(code, encoding="utf-8")
     return [out]
+
 
 
 if __name__ == "__main__":

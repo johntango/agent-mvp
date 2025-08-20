@@ -261,7 +261,7 @@ def create_app():
   @app.route("/tasks/<task_id>/dag")
   def task_dag(task_id: str):
         cfg = load_config()
-        data_dir = Path(cfg["DATA_DIR"])
+        data_dir = Path(cfg["APP_DATA_DIR"])
         # Build Mermaid spec
         mermaid_src = _build_mermaid_for_task(task_id)
 

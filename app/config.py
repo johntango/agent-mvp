@@ -56,8 +56,9 @@ def load_config() -> Dict:
     cfg = {
         # Workspace
         "WORKSPACE_ROOT": str(WORKSPACE_ROOT),
-
-        # LOCAL (non-git) paths
+        "BRANCH_STRATEGY": "per_story",    # or "per_task"
+        "DELETE_REMOTE_BRANCH_ON_MERGE": "1",
+                # LOCAL (non-git) paths
         "APP_DATA_DIR": str(APP_DATA_DIR),
         "LOCAL_GENERATED_ROOT":  "/workspaces/agent-mvp/generated",  # e.g. /workspaces/agent-mvp/generated
         "LOCAL_STORY_ROOT": "/workspaces/agent-mvp/meta/stories",
