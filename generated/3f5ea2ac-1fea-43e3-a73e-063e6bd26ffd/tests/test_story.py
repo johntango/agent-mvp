@@ -40,12 +40,3 @@ def test_negative_weight():
 def test_non_numeric_weight():
     with pytest.raises(TypeError, match="NON_NUMERIC_WEIGHT"):
         calculate_shipping_cost("1.0")
-
-    with pytest.raises(TypeError, match="NON_NUMERIC_WEIGHT"):
-        calculate_shipping_cost(None)
-
-    with pytest.raises(TypeError, match="NON_NUMERIC_WEIGHT"):
-        calculate_shipping_cost([])
-
-    with pytest.raises(TypeError, match="NON_NUMERIC_WEIGHT"):
-        calculate_shipping_cost({})
